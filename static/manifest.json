@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "Leetdash Submission Sync",
+  "version": "0.1.0",
+  "description": "Accepted 풀이를 날짜별 GitHub Draft PR에 자동으로 누적합니다.",
+  "permissions": ["alarms", "scripting", "storage"],
+  "host_permissions": [
+    "https://api.github.com/*",
+    "https://github.com/login/*",
+    "https://leetcode.com/problems/*",
+    "https://www.leetcode.com/problems/*",
+    "https://school.programmers.co.kr/learn/courses/*/lessons/*",
+    "https://swexpertacademy.com/*",
+    "https://www.swexpertacademy.com/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "32": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "128": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://swexpertacademy.com/*",
+        "https://www.swexpertacademy.com/*"
+      ],
+      "js": ["content/swea-page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true,
+      "match_about_blank": true
+    },
+    {
+      "matches": [
+        "https://leetcode.com/problems/*",
+        "https://www.leetcode.com/problems/*",
+        "https://school.programmers.co.kr/learn/courses/*/lessons/*",
+        "https://swexpertacademy.com/*",
+        "https://www.swexpertacademy.com/*"
+      ],
+      "js": ["content/content-script.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ]
+}

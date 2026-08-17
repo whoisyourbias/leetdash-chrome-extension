@@ -1,0 +1,19 @@
+{
+  "name": "leetdash-chrome-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Accepted solutions to a daily Leetdash Draft PR",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "package": "node scripts/package.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}
