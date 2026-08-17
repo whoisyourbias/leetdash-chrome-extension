@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { closePastDrafts } from "../src/background/sync";
+import { closePastDrafts, refreshTodayPull } from "../src/background/sync";
 import type { AuthState, DailyPullRequest, SubmissionQueueItem } from "../src/shared/model";
 
 const auth: AuthState = { login: "ada", token: "token" };
@@ -65,6 +65,53 @@ describe("past Draft reconciliation", () => {
     expect(client.getPull).not.toHaveBeenCalled();
     expect(client.markReady).not.toHaveBeenCalled();
     expect(pulls["2026-08-16"].draft).toBe(true);
+    expect(chrome.storage.local.set).not.toHaveBeenCalled();
+  });
+});
+
+describe("today pull refresh", () => {
+  it("fetches today's managed pull and caches its live state", async () => {
+    const live = {
+      ...record,
+      date: "2026-08-17",
+      compactDate: "260817",
+      branch: "260817",
+      number: 17,
+      draft: false,
+    };
+    const client = { findManagedOpenPull: vi.fn(async () => live) };
+    const pulls: Record<string, DailyPullRequest> = {};
+
+    await expect(refreshTodayPull(
+      auth,
+      client as any,
+      pulls,
+      new Date("2026-08-17T01:00:00+09:00"),
+    )).resolves.toEqual({ date: "2026-08-17", pull: live });
+    expect(client.findManagedOpenPull).toHaveBeenCalledWith("ada", "260817", "2026-08-17");
+    expect(pulls["2026-08-17"]).toEqual(live);
+    expect(chrome.storage.local.set).toHaveBeenCalledWith({ dailyPulls: pulls });
+  });
+
+  it("removes a stale cached record when today's pull no longer exists", async () => {
+    const client = { findManagedOpenPull: vi.fn(async () => undefined) };
+    const pulls = {
+      "2026-08-17": { ...record, date: "2026-08-17", compactDate: "260817", branch: "260817" },
+    };
+
+    await refreshTodayPull(auth, client as any, pulls, new Date("2026-08-17T01:00:00+09:00"));
+
+    expect(pulls["2026-08-17"]).toBeUndefined();
+    expect(chrome.storage.local.set).toHaveBeenCalledWith({ dailyPulls: pulls });
+  });
+
+  it("does not rewrite storage when today's cached record is current", async () => {
+    const live = { ...record, date: "2026-08-17", compactDate: "260817", branch: "260817" };
+    const client = { findManagedOpenPull: vi.fn(async () => live) };
+    const pulls = { "2026-08-17": { ...live } };
+
+    await refreshTodayPull(auth, client as any, pulls, new Date("2026-08-17T01:00:00+09:00"));
+
     expect(chrome.storage.local.set).not.toHaveBeenCalled();
   });
 });

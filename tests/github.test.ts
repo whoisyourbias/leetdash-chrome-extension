@@ -190,6 +190,23 @@ describe("GitHub daily submission orchestration", () => {
     ]);
   });
 
+  it("reads an extension-managed Ready PR for popup display", async () => {
+    const pull = {
+      number: 17,
+      node_id: "PR_node",
+      html_url: "https://github.com/whoisyourbias/leetdash/pull/17",
+      draft: false,
+      body: "<!-- leetdash-extension:date=2026-08-17 -->",
+      head: { ref: "260817", user: { login: "ada" } },
+    };
+    const client = new GitHubClient("token", vi.fn(async () => response([pull])) as typeof fetch);
+
+    await expect(client.findManagedOpenPull("ada", "260817", "2026-08-17"))
+      .resolves.toMatchObject({ number: 17, draft: false });
+    await expect(client.findManagedDraftPull("ada", "260817", "2026-08-17"))
+      .rejects.toThrow("Ready 상태");
+  });
+
   it("refuses to reuse an unmarked Draft PR", async () => {
     const pull = {
       number: 17,

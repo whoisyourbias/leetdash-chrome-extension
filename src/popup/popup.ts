@@ -16,6 +16,8 @@ interface PopupState {
     prUrl?: string;
   }>;
   dailyPulls: Record<string, { url: string; draft: boolean }>;
+  today: string;
+  todayPull?: { url: string; draft: boolean };
   settings: {
     autoReadyAfterMidnight: boolean;
   };
@@ -257,16 +259,15 @@ function render(state: PopupState): void {
 
   renderSyncActivity(state, app);
 
-  const pulls = Object.entries(state.dailyPulls).sort(([left], [right]) => right.localeCompare(left));
-  if (pulls[0]) {
-    const [date, pull] = pulls[0];
+  if (state.todayPull) {
+    const pull = state.todayPull;
     const card = element("section", "pull-card");
     const pullState = element("span", pull.draft ? "pill draft" : "pill ready");
     pullState.textContent = pull.draft ? "Draft" : "Ready";
     const link = element("a");
     link.href = pull.url;
     link.target = "_blank";
-    link.textContent = `${date} PR`;
+    link.textContent = `${state.today} PR`;
     card.append(link, pullState);
     app.append(card);
   }

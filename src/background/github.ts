@@ -269,7 +269,7 @@ export class GitHubClient {
     return pulls;
   }
 
-  async findManagedDraftPull(login: string, branch: string, date: string): Promise<DailyPullRequest | undefined> {
+  async findManagedOpenPull(login: string, branch: string, date: string): Promise<DailyPullRequest | undefined> {
     const marker = `<!-- leetdash-extension:date=${date} -->`;
     const open = await this.listPulls(login, branch, "open");
     const pull = open.find((candidate) => candidate.head?.ref === branch && candidate.head?.user?.login === login);
@@ -277,7 +277,6 @@ export class GitHubClient {
     if (typeof pull.body !== "string" || !pull.body.includes(marker)) {
       throw new GitHubError(`${branch} branch의 기존 PR은 확장 프로그램이 만든 PR이 아닙니다.`, 422);
     }
-    if (!pull.draft) throw new GitHubError(`${branch} PR이 이미 Ready 상태입니다.`, 422);
     return {
       date,
       compactDate: date.replaceAll("-", "").slice(2),
@@ -285,8 +284,14 @@ export class GitHubClient {
       number: pull.number,
       nodeId: pull.node_id,
       url: pull.html_url,
-      draft: true,
+      draft: Boolean(pull.draft),
     };
+  }
+
+  async findManagedDraftPull(login: string, branch: string, date: string): Promise<DailyPullRequest | undefined> {
+    const pull = await this.findManagedOpenPull(login, branch, date);
+    if (pull && !pull.draft) throw new GitHubError(`${branch} PR이 이미 Ready 상태입니다.`, 422);
+    return pull;
   }
 
   async ensureDraftPull(

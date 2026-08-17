@@ -11,11 +11,11 @@ import {
   setStored,
   storageKeys,
 } from "./storage.js";
-import { enqueueAccepted, synchronize } from "./sync.js";
+import { enqueueAccepted, refreshTodayPull, synchronize } from "./sync.js";
 import { GitHubClient } from "./github.js";
-import { nextSeoulMidnight } from "../shared/date.js";
+import { nextSeoulMidnight, toSeoulDate } from "../shared/date.js";
 import { providerForUrl } from "../shared/catalog.js";
-import type { EditorSnapshot, PendingAttempt, Provider, SyncProgressEvent } from "../shared/model.js";
+import type { DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SyncProgressEvent } from "../shared/model.js";
 
 const SYNC_ALARM = "submission-sync";
 const CLOSE_ALARM = "day-close";
@@ -205,11 +205,24 @@ async function publicState(): Promise<any> {
   const [auth, deviceSession, queue, dailyPulls, settings, syncActivity] = await Promise.all([
     getAuth(), getDeviceSession(), getQueue(), getDailyPulls(), getSettings(), getSyncActivity(),
   ]);
+  let today = toSeoulDate(new Date()).date;
+  let todayPull: DailyPullRequest | undefined = dailyPulls[today];
+  if (auth) {
+    try {
+      const refreshed = await refreshTodayPull(auth, new GitHubClient(auth.token), dailyPulls);
+      today = refreshed.date;
+      todayPull = refreshed.pull;
+    } catch {
+      // Keep the cached record available when GitHub cannot be reached.
+    }
+  }
   return {
     auth: auth ? { login: auth.login, avatarUrl: auth.avatarUrl } : undefined,
     deviceSession,
     queue: queue.slice(-20).map(({ code: _code, ...item }) => item),
     dailyPulls,
+    today,
+    todayPull,
     settings,
     syncActivity,
   };

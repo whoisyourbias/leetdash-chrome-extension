@@ -188,6 +188,32 @@ export async function closePastDrafts(
   await setStored(storageKeys.dailyPulls, dailyPulls);
 }
 
+export async function refreshTodayPull(
+  auth: AuthState,
+  client: GitHubClient,
+  dailyPulls: Record<string, DailyPullRequest>,
+  now = new Date(),
+): Promise<{ date: string; pull?: DailyPullRequest }> {
+  const today = toSeoulDate(now);
+  const branch = submissionBranch(auth.login, today.compact);
+  const pull = await client.findManagedOpenPull(auth.login, branch, today.date);
+  const cached = dailyPulls[today.date];
+  const changed = pull
+    ? !cached
+      || cached.compactDate !== pull.compactDate
+      || cached.branch !== pull.branch
+      || cached.number !== pull.number
+      || cached.nodeId !== pull.nodeId
+      || cached.url !== pull.url
+      || cached.draft !== pull.draft
+    : cached !== undefined;
+
+  if (pull) dailyPulls[today.date] = pull;
+  else delete dailyPulls[today.date];
+  if (changed) await setStored(storageKeys.dailyPulls, dailyPulls);
+  return { date: today.date, pull };
+}
+
 export async function synchronize(
   auth: AuthState,
   fetchImpl: typeof fetch = fetch,
