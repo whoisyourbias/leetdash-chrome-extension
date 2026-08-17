@@ -1,2 +1,2 @@
-// This public OAuth client ID is replaced in dist/ by scripts/build.mjs.
-export const GITHUB_CLIENT_ID = "__GITHUB_CLIENT_ID__";
+// OAuth client IDs are public identifiers. Never add a client secret here.
+export const GITHUB_CLIENT_ID = "Ov23liucGtf8zZHCwYq9";

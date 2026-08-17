@@ -14,7 +14,7 @@ export class DeviceFlowError extends Error {
 }
 
 function assertClientId(clientId: string): void {
-  if (!clientId || clientId === "__GITHUB_CLIENT_ID__") {
+  if (!clientId) {
     throw new DeviceFlowError("client_id_missing", "확장 프로그램에 GitHub OAuth Client ID가 설정되지 않았습니다.");
   }
 }
