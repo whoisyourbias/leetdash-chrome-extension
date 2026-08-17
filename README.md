@@ -2,64 +2,83 @@
 
 LeetCode, Programmers, SWEA에서 Accepted된 코드를 `whoisyourbias/leetdash`의 날짜별 Draft PR에 자동으로 누적하는 Manifest V3 Chrome 확장 프로그램입니다.
 
-## 필수 참가자 등록
+## 요구사항
 
-확장에서 GitHub에 로그인할 계정은 **중앙 [`whoisyourbias/leetdash` 저장소의 `data/users.json`](https://github.com/whoisyourbias/leetdash/blob/master/data/users.json)**에 등록되어 있어야 합니다. 확장 프로그램 소스 저장소인 `whoisyourbias/leetdash-chrome-extension`의 파일을 뜻하지 않습니다.
+- Chrome 또는 Chromium 기반 브라우저
+- 소스에서 빌드할 경우 Node.js 20 이상과 npm
+- 중앙 [`whoisyourbias/leetdash` 저장소의 `data/users.json`](https://github.com/whoisyourbias/leetdash/blob/master/data/users.json)에 등록된 GitHub 계정
 
-등록되지 않은 사용자는 중앙 저장소에서 `data/users.json`을 수정하는 PR을 먼저 만들어야 합니다. 등록이 기본 브랜치 `master`에 반영된 다음 확장 프로그램에 로그인할 수 있습니다.
+참가자 등록은 확장 프로그램 저장소가 아니라 중앙 `whoisyourbias/leetdash` 저장소에서 관리합니다. 등록되지 않은 사용자는 `data/users.json`을 수정하는 PR을 만들고, 해당 변경이 `master`에 반영된 뒤 확장 프로그램에 로그인해야 합니다.
 
-## OAuth App 준비
+문제 카탈로그와 사용자 목록은 확장 프로그램에 번들하지 않습니다. 실행 중 중앙 저장소의 `master`에 있는 `data/problem-catalog.json`과 `data/users.json`을 GitHub API로 읽습니다.
 
-관리자는 GitHub `Settings > Developer settings > OAuth Apps`에서 팀용 OAuth App을 한 번 등록합니다.
+## 빌드
 
-- Homepage URL: `https://whoisyourbias.github.io/leetdash/`
-- Authorization callback URL: `https://whoisyourbias.github.io/leetdash/` (Device Flow에서는 사용하지 않음)
-- `Enable Device Flow` 활성화
-
-Client ID는 공개 식별자이므로 빌드 환경 변수로 넣습니다. Client secret은 생성하거나 확장 프로그램에 포함하지 않습니다.
+의존성을 설치하고 테스트, 타입 검사, 개발용 빌드를 실행합니다.
 
 ```bash
-EXTENSION_GITHUB_CLIENT_ID=<oauth-client-id> npm run package
+npm ci
+npm test
+npm run typecheck
+npm run build
 ```
 
-빌드 결과는 `dist/`, 내부 배포 zip은 `artifacts/leetdash-extension.zip`에 생성됩니다.
+빌드 결과는 `dist/`에 생성됩니다. GitHub OAuth Client ID는 공개 식별자로 소스에 포함되어 있으므로 별도 환경 변수나 `.env` 파일이 필요하지 않습니다. Client secret은 사용하지 않으며 소스, 빌드 또는 릴리스 파일에 추가하면 안 됩니다.
 
-문제 카탈로그와 사용자 목록은 확장 프로그램에 포함하지 않습니다. 실행 중 중앙 GitHub 저장소의 `master`에서 읽으며, 진행도 데이터는 확장 프로그램이 사용하지 않습니다.
+## 확장 프로그램 실행
 
-## 내부 설치
+1. Chrome 주소창에서 `chrome://extensions`를 엽니다.
+2. 오른쪽 위의 `개발자 모드`를 켭니다.
+3. `압축해제된 확장 프로그램을 로드합니다`를 누릅니다.
+4. 이 저장소의 `dist/` 디렉터리를 선택합니다.
+5. 코드를 수정한 경우 `npm run build`를 다시 실행하고 확장 프로그램 카드의 새로고침 버튼을 누릅니다.
 
-1. `chrome://extensions`에서 개발자 모드를 켭니다.
-2. 로컬 개발은 `압축해제된 확장 프로그램을 로드합니다`에서 `dist`를 선택합니다.
-3. 팀 배포는 zip을 전달하고, 사용자가 압축을 푼 디렉터리를 같은 방법으로 로드합니다.
-4. 툴바의 Leetdash 아이콘을 열어 GitHub 로그인 버튼을 누르고 GitHub Device Flow 코드를 입력합니다.
+GitHub Release의 ZIP으로 설치할 때는 먼저 압축을 푼 다음, 압축을 푼 디렉터리를 같은 방식으로 선택합니다. ZIP 자체를 `압축해제된 확장 프로그램`으로 선택할 수는 없습니다.
 
-OAuth token은 `chrome.storage.local`의 service worker 전용 영역에 저장됩니다. 미동기화 풀이 코드는 `pendingQueue`에만 임시 보관하며, GitHub 동기화가 완료되면 큐에서 제거합니다. 완료 결과는 코드 본문이 없는 `syncHistory`에 최대 100개만 보관합니다. 로그아웃할 때 `pendingQueue`에 미동기화 코드가 있으면 삭제 확인을 받습니다.
+## 사용법
 
-확장이 처리하는 데이터와 공개 GitHub PR 전송 범위는 [개인정보 안내](PRIVACY.md)를 먼저 확인하세요.
+1. LeetCode, Programmers 또는 SWEA의 문제 페이지를 엽니다.
+2. 툴바에서 Leetdash 아이콘을 누르고 `GitHub 로그인`을 선택합니다.
+3. 표시된 Device Flow 코드를 GitHub 인증 페이지에 입력하고 `public_repo` 권한을 승인합니다.
+4. 팝업의 `현재 열린 문제`에서 감지된 공급자와 문제 번호를 확인합니다.
+5. 감지 결과가 틀렸다면 `현재 문제 수정`에서 올바른 공급자와 번호를 저장합니다. 사용자 지정 값은 같은 문제를 새로고침하거나 다시 방문해도 유지되며 `자동 감지로 되돌리기`를 눌러야 해제됩니다.
+6. 문제 사이트에서 코드를 제출해 Accepted를 받습니다. 제출 시점에 캡처한 코드는 Accepted가 10분 안에 확인된 경우에만 동기화 큐에 들어갑니다.
+7. 팝업에서 동기화 단계와 결과를 확인합니다. 성공한 코드는 GitHub의 날짜별 브랜치와 Draft PR에 누적되고 로컬 미동기화 큐에서는 제거됩니다.
+8. 네트워크나 카탈로그 문제로 실패했다면 오류를 수정한 뒤 `다시 동기화`를 누릅니다.
 
-## GitHub 공개 배포
+같은 문제를 다른 문제 번호로 다시 동기화하려면 현재 문제 번호를 수정한 뒤 다시 Accepted 제출해야 합니다. 이미 GitHub에 올라간 이전 번호의 파일은 자동으로 삭제되지 않습니다.
 
-소스 저장소에는 `src`, `static`, `tests`와 빌드 스크립트만 커밋합니다. `dist`와 `artifacts`는 재생성 가능한 산출물이므로 커밋하지 않습니다.
+OAuth token은 `chrome.storage.local`의 service worker 영역에 저장됩니다. 미동기화 코드는 `pendingQueue`에만 임시 보관하고, 완료 기록은 코드 본문 없이 `syncHistory`에 최대 100개 저장합니다. 로그아웃할 때 미동기화 코드가 있으면 삭제 여부를 먼저 확인합니다. 자세한 데이터 처리 범위는 [개인정보 안내](PRIVACY.md)를 확인하세요.
 
-1. 공개 릴리스용 버전이라면 `static/manifest.json`의 `version`을 올립니다.
-2. OAuth Client ID를 환경 변수로 전달해 패키지를 생성합니다.
-3. 생성된 `artifacts/leetdash-extension.zip`의 압축 무결성을 검사합니다.
-4. GitHub Release에 ZIP만 첨부하고, 설치자는 압축을 푼 뒤 `chrome://extensions`에서 로드합니다.
+## 릴리스 패키지 생성
 
 ```bash
-EXTENSION_GITHUB_CLIENT_ID=<oauth-client-id> npm run package
+npm run package
 unzip -t artifacts/leetdash-extension.zip
 ```
 
-OAuth Client ID는 공개 식별자이므로 릴리스 파일에 포함될 수 있습니다. Client secret, GitHub access token, `.env` 파일은 저장소나 릴리스에 포함하면 안 됩니다. GitHub Release 설치는 자동 업데이트를 제공하지 않으므로 새 버전마다 ZIP을 다시 배포해야 합니다.
+`npm run package`는 빌드를 다시 실행하고 `artifacts/leetdash-extension.zip`을 생성합니다. ZIP 내부 최상위에 `manifest.json`이 있으므로 Chrome Web Store와 GitHub Release에 그대로 업로드할 수 있습니다.
+
+새 버전을 배포할 때는 다음 순서를 따릅니다.
+
+1. `package.json`, `package-lock.json`, `static/manifest.json`의 버전을 동일하게 올립니다.
+2. 테스트와 타입 검사를 통과시킵니다.
+3. `npm run package`와 `unzip -t`로 최종 ZIP을 검증합니다.
+4. 기본 브랜치에 병합된 커밋에 `v<version>` annotated tag를 만들고 GitHub Release에 ZIP을 첨부합니다.
+
+`dist/`와 `artifacts/`는 재생성 가능한 산출물이므로 저장소에는 커밋하지 않습니다. GitHub Release 설치는 자동 업데이트를 제공하지 않으므로 새 버전마다 ZIP을 다시 받아 설치해야 합니다.
+
+## GitHub OAuth
+
+확장 프로그램은 GitHub OAuth Device Flow를 사용하며 공개 Client ID만 포함합니다. OAuth App에는 `Enable Device Flow`가 활성화되어 있습니다. Client ID는 앱을 식별할 뿐 인증 비밀로 사용하지 않습니다. GitHub access token은 사용자가 Device Flow를 승인한 뒤에만 발급됩니다.
 
 ## 동작
 
 - 제출 버튼 또는 `Ctrl/Cmd+Enter` 시점의 코드와 언어를 캡처하고 10분 안에 Accepted 결과가 나타날 때만 큐에 넣습니다.
 - GitHub 계정은 중앙 [`whoisyourbias/leetdash`의 `data/users.json`](https://github.com/whoisyourbias/leetdash/blob/master/data/users.json)에 등록되어 있어야 하며, 문제는 같은 저장소의 `data/problem-catalog.json`에 존재해야 합니다.
 - 경로는 provider별 canonical source인 `leetcode`, `programmers`, `swea`를 사용합니다.
-- 팝업의 미동기화 제출에는 자동 감지된 provider와 문제 번호가 표시됩니다. `pending` 또는 `blocked` 항목에서 이를 수정하면 중앙 카탈로그 검증을 통과한 값이 `problemOverride`로 저장되고 즉시 다시 동기화됩니다.
-- 사용자가 저장한 `problemOverride`는 자동 재감지, 중복 Accepted 캡처, 재시도보다 항상 우선합니다. 팝업에서 명시적으로 `자동 감지로 되돌리기`를 선택해야만 제거됩니다.
+- 팝업의 `현재 열린 문제`에는 제출 전부터 자동 감지된 provider와 문제 번호가 표시됩니다. 이를 수정하면 중앙 카탈로그 검증을 통과한 값이 문제 화면별 `problemOverride`로 저장되며, 같은 화면의 기존 `pending` 또는 `blocked` 제출에도 즉시 반영됩니다.
+- 사용자가 한 번 저장한 `problemOverride`는 같은 문제의 새로고침·재방문·재제출에서 유지되고 자동 재감지, 중복 Accepted 캡처, 재시도보다 항상 우선합니다. 팝업에서 명시적으로 `자동 감지로 되돌리기`를 선택해야만 제거됩니다.
 - 일반 참가자는 fork가 없으면 `<githubUsername>/leetdash`를 자동 생성합니다. 원본 저장소 소유자는 fork 대신 `submissions/<githubUsername>/YYMMDD` upstream branch를 사용하되 항상 Draft PR을 거칩니다.
 - Accepted 시각의 Asia/Seoul 날짜 `YYMMDD`를 branch와 Draft PR 제목으로 사용합니다.
 - 같은 문제를 다른 언어로 다시 통과하면 기존 `Solution.*`를 제거하고 최신 코드를 한 커밋으로 기록합니다.
@@ -82,6 +101,7 @@ GitHub 상태 폴링은 팝업을 열 때, 확장 프로그램 시작 시, 제�
 
 - `pendingAttempts`: 제출 코드를 캡처한 후 Accepted 결과를 기다리는 10분 이내의 임시 데이터
 - `pendingQueue`: Accepted는 확인됐지만 GitHub 동기화가 완료되지 않은 코드와 문제 자동 감지값. 사용자가 문제 정보를 수정한 경우 카탈로그 검증을 마친 `problemOverride`도 함께 보관하며, 동기화 시 `problemOverride > 자동 감지값` 순서로 해석합니다. 동기화 성공 시 즉시 제거
+- `problemOverrides`: 문제 화면 식별 키별로 사용자가 확정한 provider와 문제 번호. 수동 해제 전에는 해당 문제를 자동 매핑 대상으로 되돌리지 않습니다.
 - `syncHistory`: 최근 동기화 완료 내역. 소스 코드 없이 최대 100개 보관
 - `pullSnapshots`: GitHub PR 상태의 비권위적 캐시
 - `branchClaims`: PR이 아직 없는 branch가 확장 프로그램이 생성한 branch인지 확인하기 위한 로컬 소유 기록

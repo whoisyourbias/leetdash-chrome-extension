@@ -12,7 +12,7 @@ header { margin-bottom: 18px; }
 .button { display: inline-flex; justify-content: center; align-items: center; width: 100%; border: 0; border-radius: 9px; background: #24292f; color: white; padding: 10px 12px; font-weight: 700; text-decoration: none; cursor: pointer; }
 .button.secondary { margin-top: 10px; background: #e2e8f0; color: #172033; }
 .link-button { margin-top: 16px; background: transparent; color: #64748b; padding: 4px; font-size: 12px; }
-.device-card, .pull-card, .queue-item, .account, .sync-card, .settings-card, .registration-card { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; }
+.device-card, .pull-card, .queue-item, .account, .sync-card, .settings-card, .registration-card, .active-problem-card { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; }
 .device-card { text-align: center; }
 .device-code { display: block; margin: 10px 0 14px; font-size: 25px; font-weight: 800; letter-spacing: .12em; }
 .account img { width: 34px; height: 34px; border-radius: 50%; }
@@ -26,6 +26,10 @@ header { margin-bottom: 18px; }
 .registration-note p, .registration-card p { margin: 0 0 5px; line-height: 1.45; }
 .registration-card { margin: 0 0 12px; }
 .registration-card strong { display: block; margin-bottom: 5px; font-size: 12px; }
+.active-problem-card { margin-top: 10px; }
+.active-problem-heading { display: grid; gap: 2px; }
+.active-problem-title { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.active-problem-empty { margin: 6px 0 0; line-height: 1.45; }
 .pull-card { justify-content: space-between; margin-top: 10px; }
 a { color: #2563eb; font-size: 12px; font-weight: 700; }
 .pill { border-radius: 999px; padding: 3px 8px; font-size: 10px; font-weight: 800; }

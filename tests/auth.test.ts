@@ -1,12 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { pollDeviceFlow, startDeviceFlow } from "../src/background/auth";
+import { GITHUB_CLIENT_ID } from "../src/config";
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 }
 
 describe("GitHub Device Flow", () => {
+  it("ships the public OAuth client ID without requiring build-time configuration", () => {
+    expect(GITHUB_CLIENT_ID).toBe("Ov23liucGtf8zZHCwYq9");
+  });
+
   it("requests only public repository access", async () => {
     const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init: RequestInit = {}) => {
       const params = new URLSearchParams(String(init.body));

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyProblemOverride, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
-import type { AuthState, DailyPullRequest, PendingAttempt, ProblemCatalog, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
+import { applyActiveProblemOverrideToQueue, applyProblemOverride, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
+import type { ActiveProblem, AuthState, DailyPullRequest, PendingAttempt, ProblemCatalog, ProblemOverride, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
 
 const auth: AuthState = { login: "ada", token: "token" };
 const record: DailyPullRequest = {
@@ -16,8 +16,14 @@ const record: DailyPullRequest = {
 const sweaCatalog: ProblemCatalog = {
   lists: [{
     key: "swea",
-    problems: [{ provider: "swea", problemId: "2071", problemKey: "swea:2071", title: "평균값 구하기", sourceUrl: "https://swexpertacademy.com/main/code/problem/problemDetail.do?problemId=2071" }],
-    items: [{ problemKey: "swea:2071", submissionKey: "2071" }],
+    problems: [
+      { provider: "swea", problemId: "2071", problemKey: "swea:2071", title: "평균값 구하기", sourceUrl: "https://swexpertacademy.com/main/code/problem/problemDetail.do?problemId=2071" },
+      { provider: "swea", problemId: "1204", problemKey: "swea:1204", title: "최빈수 구하기", sourceUrl: "https://swexpertacademy.com/main/code/problem/problemDetail.do?problemId=1204" },
+    ],
+    items: [
+      { problemKey: "swea:2071", submissionKey: "2071" },
+      { problemKey: "swea:1204", submissionKey: "1204" },
+    ],
   }],
 };
 
@@ -144,6 +150,75 @@ describe("today pull refresh", () => {
 });
 
 describe("pending queue completion", () => {
+  it("applies an active problem override to matching legacy queued work immediately", () => {
+    const activeProblem: ActiveProblem = {
+      tabId: 1,
+      pageUrl: "https://swexpertacademy.com/main/solvingProblem/solvingProblem.do",
+      contextKey: "swea:title:2071. 평균값 구하기",
+      contextAliases: ["swea:contest:AV13zo1KAAACFAYh"],
+      detected: { provider: "swea", problemId: "10", problemTitle: "2071. 평균값 구하기" },
+    };
+    const problemOverride: ProblemOverride = {
+      provider: "swea",
+      problemId: "2071",
+      problemTitle: "평균값 구하기",
+      updatedAt: "2026-08-17T01:00:00Z",
+      detectedProvider: "swea",
+      detectedProblemId: "10",
+      detectedProblemTitle: "2071. 평균값 구하기",
+    };
+    const queue = [
+      {
+        id: "matching",
+        provider: "swea",
+        pageUrl: activeProblem.pageUrl,
+        problemIdHint: "10",
+        pageTitle: "SW Expert Academy",
+        tabId: 1,
+        status: "blocked",
+        error: "catalog",
+      },
+      {
+        id: "matching-alias",
+        provider: "swea",
+        problemContextKey: "swea:contest:AV13zo1KAAACFAYh",
+        pageUrl: activeProblem.pageUrl,
+        problemIdHint: "10",
+        pageTitle: "SW Expert Academy",
+        tabId: 2,
+        status: "blocked",
+        error: "catalog",
+      },
+      {
+        id: "other-tab",
+        provider: "swea",
+        pageUrl: activeProblem.pageUrl,
+        problemIdHint: "10",
+        pageTitle: "SW Expert Academy",
+        tabId: 2,
+        status: "blocked",
+        error: "catalog",
+      },
+    ] as SubmissionQueueItem[];
+
+    expect(applyActiveProblemOverrideToQueue(queue, activeProblem, sweaCatalog, problemOverride)).toBe(true);
+    expect(queue[0]).toMatchObject({
+      problemContextKey: activeProblem.contextKey,
+      problemId: "2071",
+      problemOverride,
+      status: "pending",
+      error: undefined,
+    });
+    expect(queue[1]).toMatchObject({
+      id: "matching-alias",
+      problemContextKey: activeProblem.contextKey,
+      problemOverride,
+      status: "pending",
+    });
+    expect(queue[2]).toMatchObject({ id: "other-tab", status: "blocked", error: "catalog" });
+    expect(queue[2]).not.toHaveProperty("problemOverride");
+  });
+
   it("stores a validated manual override and clears the previous block", () => {
     const detected = {
       provider: "swea",
@@ -224,7 +299,8 @@ describe("pending queue completion", () => {
       pageTitle: "1204. 최빈수",
     });
     expect(redetected).toMatchObject({
-      problemIdHint: "1204",
+      problemIdHint: "2071",
+      pageTitle: "2071. 평균값 구하기",
       problemOverride: { provider: "swea", problemId: "2071" },
     });
   });
@@ -239,5 +315,53 @@ describe("pending queue completion", () => {
     expect(queue).toEqual([]);
     expect(history).toEqual([completed]);
     expect(history[0]).not.toHaveProperty("code");
+  });
+
+  it("allows the same page and code to be synchronized again under a different manual problem number", async () => {
+    const attempt = {
+      id: "first-submission",
+      provider: "swea",
+      pageUrl: "https://swexpertacademy.com/main/solvingProblem/solvingProblem.do",
+      problemContextKey: "swea:title:2071. 평균값 구하기",
+      problemIdHint: "10",
+      pageTitle: "2071. 평균값 구하기",
+      tabId: 1,
+      frameId: 0,
+      capturedAt: "2026-08-17T01:00:00Z",
+      code: "class Main {}",
+      language: "java",
+    } as PendingAttempt;
+    const first = applyProblemOverride(
+      await enqueueAccepted(attempt, "2026-08-17T01:01:00Z"),
+      sweaCatalog,
+      "swea",
+      "2071",
+    );
+    const firstQueue = [first];
+    const history: SyncHistoryItem[] = [];
+
+    moveCompletedToHistory(firstQueue, 0, history, {
+      ...first,
+      status: "synced",
+      syncedAt: "2026-08-17T01:02:00Z",
+      problemId: "2071",
+      path: "submissions/ada/swea/2071/Solution.java",
+    });
+    await chrome.storage.local.set({ pendingQueue: firstQueue });
+
+    const second = applyProblemOverride(
+      await enqueueAccepted({ ...attempt, id: "second-submission" }, "2026-08-17T01:03:00Z"),
+      sweaCatalog,
+      "swea",
+      "1204",
+    );
+
+    expect(history).toHaveLength(1);
+    expect(second).toMatchObject({
+      id: "second-submission",
+      problemId: "1204",
+      problemOverride: { provider: "swea", problemId: "1204" },
+      status: "pending",
+    });
   });
 });

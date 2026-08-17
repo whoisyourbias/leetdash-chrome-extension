@@ -5,6 +5,9 @@ export interface ProblemOverride {
   problemId: string;
   problemTitle: string;
   updatedAt: string;
+  detectedProvider?: Provider;
+  detectedProblemId?: string;
+  detectedProblemTitle?: string;
 }
 
 export interface EditorSnapshot {
@@ -16,6 +19,8 @@ export interface PendingAttempt extends EditorSnapshot {
   id: string;
   provider: Provider;
   problemIdHint?: string;
+  problemContextKey?: string;
+  problemOverride?: ProblemOverride;
   pageTitle: string;
   pageUrl: string;
   tabId: number;
@@ -59,13 +64,25 @@ export interface SubmissionQueueItem extends PendingAttempt {
   status: QueueStatus;
   problemId?: string;
   problemTitle?: string;
-  problemOverride?: ProblemOverride;
   path?: string;
   prUrl?: string;
   error?: string;
   blockReason?: PullBlockReason;
   retryAt?: string;
   attempts: number;
+}
+
+export interface ActiveProblem {
+  tabId: number;
+  pageUrl: string;
+  contextKey: string;
+  contextAliases: string[];
+  detected: {
+    provider: Provider;
+    problemId?: string;
+    problemTitle?: string;
+  };
+  problemOverride?: ProblemOverride;
 }
 
 export interface SyncHistoryItem extends Omit<SubmissionQueueItem, "code" | "status" | "error" | "blockReason" | "retryAt"> {
