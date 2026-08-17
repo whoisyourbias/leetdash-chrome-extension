@@ -33,7 +33,7 @@ EXTENSION_GITHUB_CLIENT_ID=<oauth-client-id> npm run package
 3. 팀 배포는 zip을 전달하고, 사용자가 압축을 푼 디렉터리를 같은 방법으로 로드합니다.
 4. 툴바의 Leetdash 아이콘을 열어 GitHub 로그인 버튼을 누르고 GitHub Device Flow 코드를 입력합니다.
 
-OAuth token은 `chrome.storage.local`의 service worker 전용 영역에 저장됩니다. 동기화 대기 중인 풀이 코드는 로컬에 보관되며, GitHub 업로드가 끝나면 큐에서 코드 본문을 제거합니다. 로그아웃할 때 미동기화 코드가 있으면 삭제 확인을 받습니다.
+OAuth token은 `chrome.storage.local`의 service worker 전용 영역에 저장됩니다. 미동기화 풀이 코드는 `pendingQueue`에만 임시 보관하며, GitHub 동기화가 완료되면 큐에서 제거합니다. 완료 결과는 코드 본문이 없는 `syncHistory`에 최대 100개만 보관합니다. 로그아웃할 때 `pendingQueue`에 미동기화 코드가 있으면 삭제 확인을 받습니다.
 
 확장이 처리하는 데이터와 공개 GitHub PR 전송 범위는 [개인정보 안내](PRIVACY.md)를 먼저 확인하세요.
 
@@ -64,3 +64,24 @@ OAuth Client ID는 공개 식별자이므로 릴리스 파일에 포함될 수 �
 - 기본 설정에서는 KST 자정 이후 미동기화 큐가 없으면 Draft를 Ready로 바꿉니다. 팝업의 `자정 이후 자동 Ready 전환`을 끄면 Draft를 그대로 유지하며, 다시 켜면 다음 동기화에서 지난 날짜 Draft를 처리합니다. Chrome이 꺼져 있었다면 다음 시작이나 15분 주기 복구 작업에서 처리합니다.
 
 팝업의 `다시 동기화`는 네트워크 실패뿐 아니라 카탈로그 갱신 후 보류된 제출도 다시 검사합니다. 이미 Ready/closed/merged된 날짜 branch에는 새 커밋을 만들지 않고 확인 필요 상태로 남깁니다.
+
+## 상태 관리 아키텍처
+
+PR의 실제 상태는 GitHub를 단일 source of truth로 사용합니다. 확장 프로그램은 로컬 스냅샷의 `draft` 값을 믿고 커밋하지 않으며, 날짜 branch에 쓰기 전에 GitHub API에서 해당 PR을 `state=all`로 조회해 다음 상태를 구분합니다.
+
+- `draft`: 새 풀이를 누적할 수 있습니다.
+- `ready`: 새 커밋을 차단하고 사용자 확인을 요청합니다.
+- `closed`: 새 PR을 중복 생성하지 않고 GitHub에서 기존 PR을 다시 열도록 안내합니다.
+- `merged`: 해당 날짜 작업이 종료된 것으로 보고 새 커밋을 차단합니다.
+
+GitHub 상태 폴링은 팝업을 열 때, 확장 프로그램 시작 시, 제출 동기화 전, 15분 주기 alarm, KST 자정 처리 시점에 실행됩니다. 배경 폴링은 오늘·어제, 미동기화 제출이 있는 날짜, 아직 Draft/closed로 캐시된 날짜를 조회합니다. `pullSnapshots`는 GitHub 조회가 실패했을 때 마지막 확인 상태를 보여주기 위한 캐시일 뿐, 커밋·PR 생성 여부를 결정하는 원본이 아닙니다. 과거 Ready/merged 스냅샷은 추가 폴링이 필요 없으므로 캐시에서 제거합니다.
+
+로컬 저장소의 역할은 다음과 같습니다.
+
+- `pendingAttempts`: 제출 코드를 캡처한 후 Accepted 결과를 기다리는 10분 이내의 임시 데이터
+- `pendingQueue`: Accepted는 확인됐지만 GitHub 동기화가 완료되지 않은 코드. 동기화 성공 시 즉시 제거
+- `syncHistory`: 최근 동기화 완료 내역. 소스 코드 없이 최대 100개 보관
+- `pullSnapshots`: GitHub PR 상태의 비권위적 캐시
+- `branchClaims`: PR이 아직 없는 branch가 확장 프로그램이 생성한 branch인지 확인하기 위한 로컬 소유 기록
+
+닫힌 PR을 Draft로 다시 열면 다음 폴링에서 이를 감지하고, `pull_closed` 또는 `pull_ready` 사유로만 보류된 같은 날짜의 제출을 다시 `pending`으로 전환합니다. 인증, 카탈로그, 지원 언어 오류로 보류된 제출은 PR 상태 변경만으로 자동 재시도하지 않습니다.

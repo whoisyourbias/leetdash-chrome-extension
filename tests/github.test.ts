@@ -175,14 +175,14 @@ describe("GitHub daily submission orchestration", () => {
       "260817",
       "2026-08-17",
       (message) => progress.push(message),
-    )).resolves.toEqual({
+    )).resolves.toMatchObject({
       date: "2026-08-17",
       compactDate: "260817",
       branch: "260817",
       number: 17,
       nodeId: "PR_node",
       url: pull.html_url,
-      draft: true,
+      state: "draft",
     });
     expect(progress).toEqual([
       "기존 Draft PR을 확인하는 중입니다.",
@@ -201,10 +201,33 @@ describe("GitHub daily submission orchestration", () => {
     };
     const client = new GitHubClient("token", vi.fn(async () => response([pull])) as typeof fetch);
 
-    await expect(client.findManagedOpenPull("ada", "260817", "2026-08-17"))
-      .resolves.toMatchObject({ number: 17, draft: false });
+    await expect(client.findManagedPull("ada", "260817", "2026-08-17"))
+      .resolves.toMatchObject({ number: 17, state: "ready" });
     await expect(client.findManagedDraftPull("ada", "260817", "2026-08-17"))
       .rejects.toThrow("Ready 상태");
+  });
+
+  it("distinguishes closed and merged pull requests from a missing pull", async () => {
+    const base = {
+      number: 17,
+      node_id: "PR_node",
+      html_url: "https://github.com/whoisyourbias/leetdash/pull/17",
+      draft: false,
+      state: "closed",
+      body: "<!-- leetdash-extension:date=2026-08-17 -->",
+      head: { ref: "260817", user: { login: "ada" } },
+    };
+    const closed = new GitHubClient("token", vi.fn(async () => response([base])) as typeof fetch);
+    const merged = new GitHubClient("token", vi.fn(async () => response([{ ...base, merged_at: "2026-08-17T10:00:00Z" }])) as typeof fetch);
+
+    await expect(closed.findManagedPull("ada", "260817", "2026-08-17"))
+      .resolves.toMatchObject({ state: "closed" });
+    await expect(closed.findManagedDraftPull("ada", "260817", "2026-08-17"))
+      .rejects.toMatchObject({ blockReason: "pull_closed" });
+    await expect(merged.findManagedPull("ada", "260817", "2026-08-17"))
+      .resolves.toMatchObject({ state: "merged" });
+    await expect(merged.findManagedDraftPull("ada", "260817", "2026-08-17"))
+      .rejects.toMatchObject({ blockReason: "pull_merged" });
   });
 
   it("refuses to reuse an unmarked Draft PR", async () => {

@@ -15,9 +15,8 @@ interface PopupState {
     error?: string;
     prUrl?: string;
   }>;
-  dailyPulls: Record<string, { url: string; draft: boolean }>;
   today: string;
-  todayPull?: { url: string; draft: boolean };
+  todayPull?: { url: string; state: "draft" | "ready" | "closed" | "merged" };
   settings: {
     autoReadyAfterMidnight: boolean;
   };
@@ -262,8 +261,8 @@ function render(state: PopupState): void {
   if (state.todayPull) {
     const pull = state.todayPull;
     const card = element("section", "pull-card");
-    const pullState = element("span", pull.draft ? "pill draft" : "pill ready");
-    pullState.textContent = pull.draft ? "Draft" : "Ready";
+    const pullState = element("span", `pill ${pull.state}`);
+    pullState.textContent = ({ draft: "Draft", ready: "Ready", closed: "Closed", merged: "Merged" })[pull.state];
     const link = element("a");
     link.href = pull.url;
     link.target = "_blank";
@@ -286,7 +285,7 @@ void send("state:get").then(render);
 
 chrome.storage.onChanged.addListener((changes: Record<string, unknown>, areaName: string) => {
   if (areaName !== "local" || refreshScheduled) return;
-  if (!["queue", "dailyPulls", "settings", "syncActivity", "auth"].some((key) => key in changes)) return;
+  if (!["pendingQueue", "syncHistory", "pullSnapshots", "settings", "syncActivity", "auth"].some((key) => key in changes)) return;
   refreshScheduled = true;
   window.setTimeout(() => {
     refreshScheduled = false;

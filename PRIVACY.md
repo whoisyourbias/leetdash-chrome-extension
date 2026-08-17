@@ -24,7 +24,7 @@ LeetCode, Programmers, SWEA 페이지에서 읽은 코드는 Accepted 판정과 
 ## 저장과 삭제
 
 - GitHub OAuth access token은 `chrome.storage.local`에 저장되며 웹 페이지에 노출하지 않습니다.
-- 동기화 대기 중인 코드는 로컬 큐에 저장되고 GitHub 업로드가 완료되면 로컬 코드 본문을 제거합니다.
+- 동기화 대기 중인 코드는 로컬 `pendingQueue`에 저장되고 GitHub 업로드가 완료되면 항목 전체를 큐에서 제거합니다. 최근 완료 내역은 코드 본문 없이 로컬 `syncHistory`에 저장됩니다.
 - 로그아웃하면 인증 정보가 제거됩니다. 미동기화 코드가 있으면 삭제 여부를 먼저 확인합니다.
 - GitHub에 올라간 커밋과 Pull Request의 보관 및 삭제는 GitHub와 각 저장소의 정책 및 권한을 따릅니다.
 - 확장 프로그램을 제거하면 Chrome이 해당 확장의 로컬 저장 데이터를 제거합니다.

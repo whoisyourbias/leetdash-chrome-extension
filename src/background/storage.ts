@@ -1,15 +1,21 @@
-import type { AuthState, DailyPullRequest, DeviceSession, ExtensionSettings, PendingAttempt, ProblemCatalog, SubmissionQueueItem, SyncActivity } from "../shared/model.js";
+import type { AuthState, DailyPullRequest, DeviceSession, ExtensionSettings, PendingAttempt, ProblemCatalog, SubmissionQueueItem, SyncActivity, SyncHistoryItem } from "../shared/model.js";
 
 export const storageKeys = {
   auth: "auth",
   branchClaims: "branchClaims",
   catalog: "catalog",
-  dailyPulls: "dailyPulls",
   deviceSession: "deviceSession",
   pendingAttempts: "pendingAttempts",
-  queue: "queue",
+  pendingQueue: "pendingQueue",
+  pullSnapshots: "pullSnapshots",
   settings: "settings",
+  syncHistory: "syncHistory",
   syncActivity: "syncActivity",
+} as const;
+
+const legacyStorageKeys = {
+  dailyPulls: "dailyPulls",
+  queue: "queue",
 } as const;
 
 export const defaultSettings: ExtensionSettings = {
@@ -38,7 +44,6 @@ export async function removeStored(key: string): Promise<void> {
 export const getAuth = () => getStored<AuthState | undefined>(storageKeys.auth, undefined);
 export const getBranchClaims = () => getStored<Record<string, string>>(storageKeys.branchClaims, {});
 export const getCatalogCache = () => getStored<CatalogCache | undefined>(storageKeys.catalog, undefined);
-export const getDailyPulls = () => getStored<Record<string, DailyPullRequest>>(storageKeys.dailyPulls, {});
 export const getDeviceSession = () => getStored<DeviceSession | undefined>(storageKeys.deviceSession, undefined);
 export const getPendingAttempts = () => getStored<Record<string, PendingAttempt>>(storageKeys.pendingAttempts, {});
 export async function getSettings(): Promise<ExtensionSettings> {
@@ -62,7 +67,68 @@ export async function getSyncActivity(): Promise<SyncActivity | undefined> {
   ) return undefined;
   return candidate;
 }
-export async function getQueue(): Promise<SubmissionQueueItem[]> {
-  const queue = await getStored<unknown>(storageKeys.queue, []);
+let storageMigration: Promise<void> | undefined;
+
+async function ensureStorageMigration(): Promise<void> {
+  if (storageMigration) return storageMigration;
+  storageMigration = (async () => {
+    const stored = await chrome.storage.local.get([
+      storageKeys.pendingQueue,
+      storageKeys.pullSnapshots,
+      storageKeys.syncHistory,
+      legacyStorageKeys.dailyPulls,
+      legacyStorageKeys.queue,
+    ]);
+    const updates: Record<string, unknown> = {};
+    const legacyQueue = Array.isArray(stored[legacyStorageKeys.queue])
+      ? stored[legacyStorageKeys.queue] as Array<Record<string, any>>
+      : [];
+
+    if (!Array.isArray(stored[storageKeys.pendingQueue])) {
+      updates[storageKeys.pendingQueue] = legacyQueue.filter((item) => (
+        item.status !== "synced" && typeof item.code === "string" && item.code.length > 0
+      ));
+    }
+    if (!Array.isArray(stored[storageKeys.syncHistory])) {
+      updates[storageKeys.syncHistory] = legacyQueue
+        .filter((item) => item.status === "synced")
+        .map(({ code: _code, error: _error, retryAt: _retryAt, blockReason: _blockReason, ...item }) => ({
+          ...item,
+          status: "synced",
+          syncedAt: typeof item.syncedAt === "string" ? item.syncedAt : item.acceptedAt,
+        }));
+    }
+    if (!stored[storageKeys.pullSnapshots] || typeof stored[storageKeys.pullSnapshots] !== "object") {
+      const legacyPulls = stored[legacyStorageKeys.dailyPulls];
+      updates[storageKeys.pullSnapshots] = legacyPulls && typeof legacyPulls === "object"
+        ? Object.fromEntries(Object.entries(legacyPulls as Record<string, any>).map(([date, pull]) => [date, {
+          ...pull,
+          state: pull?.draft ? "draft" : "ready",
+        }]))
+        : {};
+    }
+    if (Object.keys(updates).length > 0) await chrome.storage.local.set(updates);
+    await chrome.storage.local.remove([legacyStorageKeys.dailyPulls, legacyStorageKeys.queue]);
+  })().catch((error) => {
+    storageMigration = undefined;
+    throw error;
+  });
+  return storageMigration;
+}
+
+export async function getPendingQueue(): Promise<SubmissionQueueItem[]> {
+  await ensureStorageMigration();
+  const queue = await getStored<unknown>(storageKeys.pendingQueue, []);
   return Array.isArray(queue) ? queue as SubmissionQueueItem[] : [];
+}
+
+export async function getSyncHistory(): Promise<SyncHistoryItem[]> {
+  await ensureStorageMigration();
+  const history = await getStored<unknown>(storageKeys.syncHistory, []);
+  return Array.isArray(history) ? history as SyncHistoryItem[] : [];
+}
+
+export async function getPullSnapshots(): Promise<Record<string, DailyPullRequest>> {
+  await ensureStorageMigration();
+  return getStored<Record<string, DailyPullRequest>>(storageKeys.pullSnapshots, {});
 }

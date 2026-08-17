@@ -1,6 +1,6 @@
 import { decodeBase64Utf8, encodeBase64Utf8 } from "../shared/crypto.js";
 import { isSolutionFilename } from "../shared/languages.js";
-import type { DailyPullRequest, ProblemCatalog, UsersFile } from "../shared/model.js";
+import type { DailyPullRequest, ProblemCatalog, PullBlockReason, UsersFile } from "../shared/model.js";
 
 export const UPSTREAM = "whoisyourbias/leetdash";
 export const BASE_BRANCH = "master";
@@ -24,6 +24,7 @@ export class GitHubError extends Error {
     message: string,
     public readonly status: number,
     public readonly retryAfter?: number,
+    public readonly blockReason?: PullBlockReason,
   ) {
     super(message);
     this.name = "GitHubError";
@@ -269,10 +270,10 @@ export class GitHubClient {
     return pulls;
   }
 
-  async findManagedOpenPull(login: string, branch: string, date: string): Promise<DailyPullRequest | undefined> {
+  async findManagedPull(login: string, branch: string, date: string): Promise<DailyPullRequest | undefined> {
     const marker = `<!-- leetdash-extension:date=${date} -->`;
-    const open = await this.listPulls(login, branch, "open");
-    const pull = open.find((candidate) => candidate.head?.ref === branch && candidate.head?.user?.login === login);
+    const pulls = await this.listPulls(login, branch, "all");
+    const pull = pulls.find((candidate) => candidate.head?.ref === branch && candidate.head?.user?.login === login);
     if (!pull) return undefined;
     if (typeof pull.body !== "string" || !pull.body.includes(marker)) {
       throw new GitHubError(`${branch} branch의 기존 PR은 확장 프로그램이 만든 PR이 아닙니다.`, 422);
@@ -284,13 +285,27 @@ export class GitHubClient {
       number: pull.number,
       nodeId: pull.node_id,
       url: pull.html_url,
-      draft: Boolean(pull.draft),
+      state: pull.merged_at
+        ? "merged"
+        : pull.state === "closed"
+          ? "closed"
+          : pull.draft
+            ? "draft"
+            : "ready",
     };
   }
 
   async findManagedDraftPull(login: string, branch: string, date: string): Promise<DailyPullRequest | undefined> {
-    const pull = await this.findManagedOpenPull(login, branch, date);
-    if (pull && !pull.draft) throw new GitHubError(`${branch} PR이 이미 Ready 상태입니다.`, 422);
+    const pull = await this.findManagedPull(login, branch, date);
+    if (pull?.state === "ready") {
+      throw new GitHubError(`${branch} PR이 이미 Ready 상태입니다.`, 422, undefined, "pull_ready");
+    }
+    if (pull?.state === "closed") {
+      throw new GitHubError(`${branch} 날짜 PR이 닫힌 상태입니다. GitHub에서 PR을 다시 열어주세요.`, 422, undefined, "pull_closed");
+    }
+    if (pull?.state === "merged") {
+      throw new GitHubError(`${branch} 날짜 PR이 이미 병합되었습니다.`, 422, undefined, "pull_merged");
+    }
     return pull;
   }
 
@@ -308,10 +323,6 @@ export class GitHubClient {
       await onProgress?.(`기존 Draft PR #${managed.number}을 사용합니다.`);
       return managed;
     }
-    await onProgress?.("같은 날짜의 종료된 PR 이력을 확인하는 중입니다.");
-    const all = await this.listPulls(login, branch, "all");
-    const historical = all.find((candidate) => candidate.head?.ref === branch && candidate.head?.user?.login === login);
-    if (historical) throw new GitHubError(`${branch} 날짜 PR이 이미 닫혔거나 병합되었습니다.`, 422);
     await onProgress?.("새 Draft PR을 생성하는 중입니다.");
     const pull = await this.request<any>("POST", `/repos/${UPSTREAM}/pulls`, {
       body: {
@@ -330,7 +341,7 @@ export class GitHubClient {
       number: pull.number,
       nodeId: pull.node_id,
       url: pull.html_url,
-      draft: true,
+      state: "draft",
     };
   }
 
