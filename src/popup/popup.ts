@@ -8,10 +8,18 @@ interface PopupState {
   };
   queue: Array<{
     id: string;
-    provider: string;
+    provider: "leetcode" | "programmers" | "swea";
+    problemIdHint?: string;
     pageTitle: string;
     status: string;
+    problemId?: string;
     problemTitle?: string;
+    problemOverride?: {
+      provider: "leetcode" | "programmers" | "swea";
+      problemId: string;
+      problemTitle: string;
+      updatedAt: string;
+    };
     error?: string;
     prUrl?: string;
   }>;
@@ -45,6 +53,12 @@ const syncSteps = [
   { stage: "commit", label: "풀이 커밋" },
   { stage: "pull-request", label: "Draft PR" },
 ] as const;
+
+const providerLabels = {
+  leetcode: "LeetCode",
+  programmers: "Programmers",
+  swea: "SWEA",
+} as const;
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const result = document.createElement(tag);
@@ -157,7 +171,93 @@ function renderQueue(state: PopupState, root: HTMLElement): void {
     status.textContent = item.error
       ?? (item.status === "syncing" && state.syncActivity?.itemId === item.id ? state.syncActivity.message : undefined)
       ?? ({ pending: "동기화 대기", syncing: "업로드 중", synced: "업로드 완료", blocked: "확인 필요" }[item.status] ?? item.status);
-    row.append(title, status);
+    const metadata = element("dl", "problem-metadata");
+    const detectedProviderLabel = element("dt");
+    detectedProviderLabel.textContent = "감지 공급자";
+    const detectedProvider = element("dd");
+    detectedProvider.textContent = providerLabels[item.provider];
+    const detectedIdLabel = element("dt");
+    detectedIdLabel.textContent = "감지 문제 번호";
+    const detectedId = element("dd");
+    detectedId.textContent = item.problemIdHint ?? "확인 못함";
+    metadata.append(detectedProviderLabel, detectedProvider, detectedIdLabel, detectedId);
+    if (item.problemOverride) {
+      const appliedLabel = element("dt");
+      appliedLabel.textContent = "적용 문제";
+      const applied = element("dd", "manual-value");
+      applied.textContent = `${providerLabels[item.problemOverride.provider]} ${item.problemOverride.problemId} · 사용자 지정`;
+      metadata.append(appliedLabel, applied);
+    } else if (item.status === "synced" && item.problemId) {
+      const appliedLabel = element("dt");
+      appliedLabel.textContent = "적용 문제";
+      const applied = element("dd");
+      applied.textContent = `${providerLabels[item.provider]} ${item.problemId}`;
+      metadata.append(appliedLabel, applied);
+    }
+    row.append(title, status, metadata);
+    if (item.status === "pending" || item.status === "blocked") {
+      const editButton = button("문제 정보 수정", () => {
+        editor.hidden = !editor.hidden;
+        editButton.textContent = editor.hidden ? "문제 정보 수정" : "수정 닫기";
+      }, "inline-button");
+      const editor = element("div", "problem-editor");
+      editor.hidden = true;
+      const providerField = element("label");
+      providerField.textContent = "공급자";
+      const providerSelect = element("select");
+      for (const provider of ["leetcode", "programmers", "swea"] as const) {
+        const option = element("option");
+        option.value = provider;
+        option.textContent = providerLabels[provider];
+        providerSelect.append(option);
+      }
+      providerSelect.value = item.problemOverride?.provider ?? item.provider;
+      providerField.append(providerSelect);
+      const idField = element("label");
+      idField.textContent = "문제 번호";
+      const idInput = element("input");
+      idInput.type = "text";
+      idInput.inputMode = "numeric";
+      idInput.pattern = "[0-9]{1,8}";
+      idInput.maxLength = 8;
+      idInput.value = item.problemOverride?.problemId ?? item.problemIdHint ?? "";
+      idField.append(idInput);
+      const feedback = element("p", "editor-feedback");
+      const actions = element("div", "editor-actions");
+      const save = button("저장 후 동기화", async () => {
+        const problemId = idInput.value.trim();
+        if (!/^\d{1,8}$/.test(problemId)) {
+          feedback.textContent = "문제 번호는 1~8자리 숫자로 입력하세요.";
+          return;
+        }
+        save.disabled = true;
+        feedback.textContent = "카탈로그를 확인하는 중입니다.";
+        const result = await send("queue:problem-override", {
+          itemId: item.id,
+          provider: providerSelect.value,
+          problemId,
+        });
+        if (result?.ok === false) {
+          save.disabled = false;
+          feedback.textContent = result.error;
+          return;
+        }
+        render(result);
+      }, "inline-button primary");
+      actions.append(save);
+      if (item.problemOverride) {
+        actions.append(button("자동 감지로 되돌리기", async () => {
+          const result = await send("queue:problem-override:clear", { itemId: item.id });
+          if (result?.ok === false) {
+            feedback.textContent = result.error;
+            return;
+          }
+          render(result);
+        }, "inline-button subtle"));
+      }
+      editor.append(providerField, idField, feedback, actions);
+      row.append(editButton, editor);
+    }
     if (item.prUrl) {
       const link = element("a");
       link.href = item.prUrl;

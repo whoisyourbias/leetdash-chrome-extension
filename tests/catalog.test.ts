@@ -49,6 +49,30 @@ describe("platform catalog resolution", () => {
     )).toMatchObject({ sourceKey: "swea", submissionKey: "1204" });
   });
 
+  it("uses a validated manual provider and problem number instead of the detected URL", () => {
+    expect(resolveCatalogProblem(
+      catalog,
+      "leetcode",
+      "https://leetcode.com/problems/two-sum/description/",
+      undefined,
+      { provider: "swea", problemId: "1204" },
+    )).toMatchObject({
+      sourceKey: "swea",
+      submissionKey: "1204",
+      problem: { provider: "swea", problemId: "1204" },
+    });
+  });
+
+  it("rejects a non-exact manual problem number", () => {
+    expect(resolveCatalogProblem(
+      catalog,
+      "swea",
+      "https://swexpertacademy.com/main/solvingProblem/solvingProblem.do",
+      "1204",
+      { provider: "swea", problemId: "1204. 최빈수" },
+    )).toBeUndefined();
+  });
+
   it("fails closed for pages outside the checked-in catalog", () => {
     expect(resolveCatalogProblem(catalog, "leetcode", "https://leetcode.com/problems/not-catalogued/"))
       .toBeUndefined();

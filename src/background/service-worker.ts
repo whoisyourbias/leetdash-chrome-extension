@@ -12,7 +12,7 @@ import {
   setStored,
   storageKeys,
 } from "./storage.js";
-import { enqueueAccepted, refreshTodayPull, synchronize } from "./sync.js";
+import { clearProblemOverride, enqueueAccepted, refreshTodayPull, saveProblemOverride, synchronize } from "./sync.js";
 import { GitHubClient } from "./github.js";
 import { nextSeoulMidnight, toSeoulDate } from "../shared/date.js";
 import { providerForUrl } from "../shared/catalog.js";
@@ -356,6 +356,24 @@ async function handleMessage(message: any, sender: any): Promise<any> {
         }
       }
       await setStored(storageKeys.pendingQueue, queue);
+      await runSynchronization();
+      return publicState();
+    }
+    case "queue:problem-override": {
+      const auth = await getAuth();
+      if (!auth) throw new Error("GitHub 로그인이 필요합니다.");
+      if (typeof message.itemId !== "string") throw new Error("수정할 제출 정보가 올바르지 않습니다.");
+      if (!["leetcode", "programmers", "swea"].includes(message.provider)) {
+        throw new Error("지원하지 않는 공급자입니다.");
+      }
+      if (typeof message.problemId !== "string") throw new Error("문제 번호가 올바르지 않습니다.");
+      await saveProblemOverride(auth, message.itemId, message.provider as Provider, message.problemId);
+      await runSynchronization();
+      return publicState();
+    }
+    case "queue:problem-override:clear": {
+      if (typeof message.itemId !== "string") throw new Error("수정할 제출 정보가 올바르지 않습니다.");
+      await clearProblemOverride(message.itemId);
       await runSynchronization();
       return publicState();
     }

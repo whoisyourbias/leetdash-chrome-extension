@@ -37,13 +37,17 @@ export function resolveCatalogProblem(
   provider: Provider,
   pageUrl: string,
   problemIdHint?: string,
+  override?: { provider: Provider; problemId: string },
 ): { sourceKey: string; submissionKey: string; problem: CatalogProblem } | undefined {
   if (!Array.isArray(catalog?.lists)) return undefined;
-  const list = catalog.lists.find((candidate) => candidate.key === canonicalSource[provider]);
+  const effectiveProvider = override?.provider ?? provider;
+  const list = catalog.lists.find((candidate) => candidate.key === canonicalSource[effectiveProvider]);
   if (!list || !Array.isArray(list.problems) || !Array.isArray(list.items)) return undefined;
-  const pageLocator = locator(provider, pageUrl, problemIdHint);
+  const overrideProblemId = override ? numericProblemId(override.problemId) : undefined;
+  if (override && overrideProblemId !== override.problemId) return undefined;
+  const pageLocator = overrideProblemId ? { problemId: overrideProblemId } : locator(effectiveProvider, pageUrl, problemIdHint);
   const problem = list.problems.find((candidate) => (
-    candidate.provider === provider
+    candidate.provider === effectiveProvider
       && (pageLocator.problemId ? candidate.problemId === pageLocator.problemId : candidate.slug === pageLocator.slug)
   ));
   if (!problem) return undefined;

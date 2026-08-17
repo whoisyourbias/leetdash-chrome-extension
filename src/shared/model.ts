@@ -1,5 +1,12 @@
 export type Provider = "leetcode" | "programmers" | "swea";
 
+export interface ProblemOverride {
+  provider: Provider;
+  problemId: string;
+  problemTitle: string;
+  updatedAt: string;
+}
+
 export interface EditorSnapshot {
   code: string;
   language: string;
@@ -52,6 +59,7 @@ export interface SubmissionQueueItem extends PendingAttempt {
   status: QueueStatus;
   problemId?: string;
   problemTitle?: string;
+  problemOverride?: ProblemOverride;
   path?: string;
   prUrl?: string;
   error?: string;

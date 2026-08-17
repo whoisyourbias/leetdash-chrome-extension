@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
-import type { AuthState, DailyPullRequest, PendingAttempt, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
+import { applyProblemOverride, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
+import type { AuthState, DailyPullRequest, PendingAttempt, ProblemCatalog, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
 
 const auth: AuthState = { login: "ada", token: "token" };
 const record: DailyPullRequest = {
@@ -12,6 +12,13 @@ const record: DailyPullRequest = {
   nodeId: "PR_node",
   url: "https://github.com/whoisyourbias/leetdash/pull/16",
   state: "draft",
+};
+const sweaCatalog: ProblemCatalog = {
+  lists: [{
+    key: "swea",
+    problems: [{ provider: "swea", problemId: "2071", problemKey: "swea:2071", title: "평균값 구하기", sourceUrl: "https://swexpertacademy.com/main/code/problem/problemDetail.do?problemId=2071" }],
+    items: [{ problemKey: "swea:2071", submissionKey: "2071" }],
+  }],
 };
 
 beforeEach(() => {
@@ -137,6 +144,33 @@ describe("today pull refresh", () => {
 });
 
 describe("pending queue completion", () => {
+  it("stores a validated manual override and clears the previous block", () => {
+    const detected = {
+      provider: "swea",
+      pageUrl: "https://swexpertacademy.com/main/solvingProblem/solvingProblem.do",
+      problemIdHint: "10",
+      status: "blocked",
+      error: "catalog",
+    } as SubmissionQueueItem;
+
+    const overridden = applyProblemOverride(detected, sweaCatalog, "swea", "2071", "2026-08-17T01:00:00Z");
+
+    expect(overridden).toMatchObject({
+      provider: "swea",
+      problemIdHint: "10",
+      problemId: "2071",
+      problemTitle: "평균값 구하기",
+      problemOverride: {
+        provider: "swea",
+        problemId: "2071",
+        problemTitle: "평균값 구하기",
+        updatedAt: "2026-08-17T01:00:00Z",
+      },
+      status: "pending",
+      error: undefined,
+    });
+  });
+
   it("repairs a duplicate blocked item with newly captured SWEA metadata", async () => {
     const blocked = {
       id: "submission",
@@ -181,6 +215,18 @@ describe("pending queue completion", () => {
       error: undefined,
     });
     expect(chrome.storage.local.set).toHaveBeenLastCalledWith({ pendingQueue: [repaired] });
+
+    const overridden = applyProblemOverride(repaired, sweaCatalog, "swea", "2071");
+    await chrome.storage.local.set({ pendingQueue: [overridden] });
+    const redetected = await enqueueAccepted({
+      ...repairedAttempt,
+      problemIdHint: "1204",
+      pageTitle: "1204. 최빈수",
+    });
+    expect(redetected).toMatchObject({
+      problemIdHint: "1204",
+      problemOverride: { provider: "swea", problemId: "2071" },
+    });
   });
 
   it("removes synchronized work from the code-bearing queue and retains only code-free history", () => {
