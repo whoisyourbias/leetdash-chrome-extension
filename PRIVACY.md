@@ -15,7 +15,7 @@ Leetdash Submission Sync는 LeetCode, Programmers, SWEA에서 사용자가 제�
 
 ## 이용 목적과 전송 대상
 
-위 데이터는 사용자를 확인하고 Accepted 풀이를 날짜별 GitHub Draft Pull Request에 누적하기 위해서만 사용합니다. GitHub 로그인 ID, 문제 정보와 소스 코드는 GitHub API를 통해 GitHub로 전송됩니다.
+위 데이터는 사용자를 확인하고 Accepted 풀이를 날짜별 GitHub Draft Pull Request에 누적하기 위해서만 사용합니다. 사용자 목록과 문제 카탈로그는 중앙 `whoisyourbias/leetdash` 저장소의 `data/users.json`과 `data/problem-catalog.json`에서 읽으며, GitHub 로그인 ID, 문제 정보와 소스 코드는 GitHub API를 통해 GitHub로 전송됩니다.
 
 중앙 저장소와 사용자 fork가 공개 저장소이므로 동기화된 소스 코드, 커밋과 Pull Request는 인터넷에 공개됩니다. 사용자는 이 공개 범위를 이해한 뒤 GitHub 로그인을 진행하고 풀이를 제출해야 합니다.
 

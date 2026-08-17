@@ -5,6 +5,7 @@ import {
   getDeviceSession,
   getPendingAttempts,
   getQueue,
+  getSettings,
   getSyncActivity,
   removeStored,
   setStored,
@@ -56,7 +57,9 @@ async function pollAuthentication(): Promise<void> {
       const registered = users.users.some(
         (user) => user.githubUsername.toLowerCase() === result.auth!.login.toLowerCase(),
       );
-      if (!registered) throw new Error(`${result.auth.login} 계정이 data/users.json에 등록되지 않았습니다.`);
+      if (!registered) {
+        throw new Error(`${result.auth.login} 계정이 중앙 whoisyourbias/leetdash 저장소의 data/users.json에 등록되지 않았습니다.`);
+      }
       await Promise.all([
         setStored(storageKeys.auth, result.auth),
         removeStored(storageKeys.deviceSession),
@@ -199,14 +202,15 @@ async function acceptAttempt(sender: any): Promise<any> {
 }
 
 async function publicState(): Promise<any> {
-  const [auth, deviceSession, queue, dailyPulls, syncActivity] = await Promise.all([
-    getAuth(), getDeviceSession(), getQueue(), getDailyPulls(), getSyncActivity(),
+  const [auth, deviceSession, queue, dailyPulls, settings, syncActivity] = await Promise.all([
+    getAuth(), getDeviceSession(), getQueue(), getDailyPulls(), getSettings(), getSyncActivity(),
   ]);
   return {
     auth: auth ? { login: auth.login, avatarUrl: auth.avatarUrl } : undefined,
     deviceSession,
     queue: queue.slice(-20).map(({ code: _code, ...item }) => item),
     dailyPulls,
+    settings,
     syncActivity,
   };
 }
@@ -253,6 +257,16 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       }
       await setStored(storageKeys.queue, queue);
       await runSynchronization();
+      return publicState();
+    }
+    case "settings:update": {
+      if (typeof message.autoReadyAfterMidnight !== "boolean") {
+        throw new Error("자동 Ready 전환 설정값이 올바르지 않습니다.");
+      }
+      await setStored(storageKeys.settings, {
+        autoReadyAfterMidnight: message.autoReadyAfterMidnight,
+      });
+      if (message.autoReadyAfterMidnight) void runSynchronization();
       return publicState();
     }
     default:

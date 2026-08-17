@@ -16,6 +16,9 @@ interface PopupState {
     prUrl?: string;
   }>;
   dailyPulls: Record<string, { url: string; draft: boolean }>;
+  settings: {
+    autoReadyAfterMidnight: boolean;
+  };
   syncActivity?: {
     itemId: string;
     title: string;
@@ -29,6 +32,7 @@ interface PopupState {
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
+const usersFileUrl = "https://github.com/whoisyourbias/leetdash/blob/master/data/users.json";
 let pollingTimer: number | undefined;
 let refreshScheduled = false;
 
@@ -57,6 +61,44 @@ function button(label: string, onClick: () => void, className = "button"): HTMLB
 
 async function send(type: string, payload: Record<string, unknown> = {}): Promise<PopupState | any> {
   return chrome.runtime.sendMessage({ type, ...payload });
+}
+
+function appendUsersFileLink(root: HTMLElement): void {
+  const link = element("a");
+  link.href = usersFileUrl;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  link.textContent = "whoisyourbias/leetdash의 data/users.json 열기";
+  root.append(link);
+}
+
+function renderSettings(state: PopupState, root: HTMLElement): void {
+  const card = element("section", "settings-card");
+  const heading = element("div", "setting-heading");
+  const copy = element("div");
+  const title = element("strong");
+  title.textContent = "자정 이후 자동 Ready 전환";
+  const description = element("p", "muted setting-description");
+  description.textContent = "KST 날짜가 바뀌고 미동기화 풀이가 없으면 지난 날짜의 Draft PR을 Ready로 바꿉니다.";
+  copy.append(title, description);
+
+  const toggle = element("input", "setting-toggle");
+  toggle.type = "checkbox";
+  toggle.checked = state.settings.autoReadyAfterMidnight;
+  toggle.setAttribute("aria-label", "자정 이후 Draft PR 자동 Ready 전환");
+  toggle.addEventListener("change", async () => {
+    toggle.disabled = true;
+    render(await send("settings:update", { autoReadyAfterMidnight: toggle.checked }));
+  });
+  heading.append(copy, toggle);
+
+  const registration = element("div", "registration-note");
+  const registrationText = element("p", "muted");
+  registrationText.textContent = "참가자 등록 기준은 중앙 Leetdash 저장소의 사용자 파일입니다.";
+  registration.append(registrationText);
+  appendUsersFileLink(registration);
+  card.append(heading, registration);
+  root.append(card);
 }
 
 function renderSyncActivity(state: PopupState, root: HTMLElement): void {
@@ -159,6 +201,14 @@ function render(state: PopupState): void {
     const intro = element("p", "intro");
     intro.textContent = "GitHub에 로그인하면 LeetCode, Programmers, SWEA의 Accepted 풀이를 날짜별 Draft PR에 자동으로 올립니다.";
     app.append(intro);
+    const registration = element("section", "registration-card");
+    const registrationTitle = element("strong");
+    registrationTitle.textContent = "사용 전 참가자 등록이 필요합니다";
+    const registrationDescription = element("p", "muted");
+    registrationDescription.textContent = "로그인할 GitHub 계정이 중앙 Leetdash 저장소의 사용자 파일에 등록되어 있어야 합니다.";
+    registration.append(registrationTitle, registrationDescription);
+    appendUsersFileLink(registration);
+    app.append(registration);
     if (state.deviceSession) {
       const card = element("section", "device-card");
       const label = element("p", "muted");
@@ -203,6 +253,8 @@ function render(state: PopupState): void {
   account.append(identity);
   app.append(account);
 
+  renderSettings(state, app);
+
   renderSyncActivity(state, app);
 
   const pulls = Object.entries(state.dailyPulls).sort(([left], [right]) => right.localeCompare(left));
@@ -233,7 +285,7 @@ void send("state:get").then(render);
 
 chrome.storage.onChanged.addListener((changes: Record<string, unknown>, areaName: string) => {
   if (areaName !== "local" || refreshScheduled) return;
-  if (!["queue", "dailyPulls", "syncActivity", "auth"].some((key) => key in changes)) return;
+  if (!["queue", "dailyPulls", "settings", "syncActivity", "auth"].some((key) => key in changes)) return;
   refreshScheduled = true;
   window.setTimeout(() => {
     refreshScheduled = false;

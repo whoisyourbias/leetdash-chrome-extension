@@ -45,4 +45,26 @@ describe("past Draft reconciliation", () => {
     expect(client.markReady).toHaveBeenCalledWith("PR_live");
     expect(pulls["2026-08-16"].draft).toBe(false);
   });
+
+  it("keeps a previous-day Draft when automatic Ready transition is disabled", async () => {
+    const client = {
+      getPull: vi.fn(),
+      markReady: vi.fn(),
+    };
+    const pulls = { "2026-08-16": { ...record } };
+
+    await closePastDrafts(
+      auth,
+      client as any,
+      [],
+      pulls,
+      new Date("2026-08-17T01:00:00+09:00"),
+      false,
+    );
+
+    expect(client.getPull).not.toHaveBeenCalled();
+    expect(client.markReady).not.toHaveBeenCalled();
+    expect(pulls["2026-08-16"].draft).toBe(true);
+    expect(chrome.storage.local.set).not.toHaveBeenCalled();
+  });
 });

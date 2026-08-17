@@ -17,6 +17,7 @@ import {
   getBranchClaims,
   getDailyPulls,
   getQueue,
+  getSettings,
   removeStored,
   setStored,
   storageKeys,
@@ -98,7 +99,12 @@ async function syncItem(
   const users = await client.readUsers();
   if (!Array.isArray(users?.users)) throw new GitHubError("GitHub 사용자 등록 파일 구조가 올바르지 않습니다.", 502);
   const user = users.users.find((candidate) => candidate.githubUsername.toLowerCase() === auth.login.toLowerCase());
-  if (!user) throw new GitHubError(`${auth.login} 계정이 data/users.json에 등록되지 않았습니다.`, 422);
+  if (!user) {
+    throw new GitHubError(
+      `${auth.login} 계정이 중앙 whoisyourbias/leetdash 저장소의 data/users.json에 등록되지 않았습니다.`,
+      422,
+    );
+  }
   const resolved = resolveCatalogProblem(catalog, item.provider, item.pageUrl, item.problemIdHint);
   if (!resolved) throw new GitHubError("현재 문제를 leetdash 카탈로그에서 찾지 못했습니다.", 422);
   const extension = languageExtension(item.language);
@@ -163,7 +169,9 @@ export async function closePastDrafts(
   queue: SubmissionQueueItem[],
   dailyPulls: Record<string, DailyPullRequest>,
   now = new Date(),
+  autoReadyAfterMidnight = true,
 ): Promise<void> {
+  if (!autoReadyAfterMidnight) return;
   const today = toSeoulDate(now).date;
   for (const [date, record] of Object.entries(dailyPulls).sort(([left], [right]) => left.localeCompare(right))) {
     if (date >= today || !record.draft) continue;
@@ -239,5 +247,6 @@ export async function synchronize(
       });
     }
   }
-  await closePastDrafts(auth, client, queue, dailyPulls);
+  const settings = await getSettings();
+  await closePastDrafts(auth, client, queue, dailyPulls, new Date(), settings.autoReadyAfterMidnight);
 }

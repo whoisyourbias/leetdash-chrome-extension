@@ -1,4 +1,4 @@
-import type { AuthState, DailyPullRequest, DeviceSession, PendingAttempt, ProblemCatalog, SubmissionQueueItem, SyncActivity } from "../shared/model.js";
+import type { AuthState, DailyPullRequest, DeviceSession, ExtensionSettings, PendingAttempt, ProblemCatalog, SubmissionQueueItem, SyncActivity } from "../shared/model.js";
 
 export const storageKeys = {
   auth: "auth",
@@ -8,8 +8,13 @@ export const storageKeys = {
   deviceSession: "deviceSession",
   pendingAttempts: "pendingAttempts",
   queue: "queue",
+  settings: "settings",
   syncActivity: "syncActivity",
 } as const;
+
+export const defaultSettings: ExtensionSettings = {
+  autoReadyAfterMidnight: true,
+};
 
 export interface CatalogCache {
   schemaVersion: 1;
@@ -36,6 +41,14 @@ export const getCatalogCache = () => getStored<CatalogCache | undefined>(storage
 export const getDailyPulls = () => getStored<Record<string, DailyPullRequest>>(storageKeys.dailyPulls, {});
 export const getDeviceSession = () => getStored<DeviceSession | undefined>(storageKeys.deviceSession, undefined);
 export const getPendingAttempts = () => getStored<Record<string, PendingAttempt>>(storageKeys.pendingAttempts, {});
+export async function getSettings(): Promise<ExtensionSettings> {
+  const settings = await getStored<Partial<ExtensionSettings> | undefined>(storageKeys.settings, undefined);
+  return {
+    autoReadyAfterMidnight: typeof settings?.autoReadyAfterMidnight === "boolean"
+      ? settings.autoReadyAfterMidnight
+      : defaultSettings.autoReadyAfterMidnight,
+  };
+}
 export async function getSyncActivity(): Promise<SyncActivity | undefined> {
   const activity = await getStored<unknown>(storageKeys.syncActivity, undefined);
   if (!activity || typeof activity !== "object") return undefined;

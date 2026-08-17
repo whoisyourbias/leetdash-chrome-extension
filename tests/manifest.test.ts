@@ -3,8 +3,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL("../static/manifest.json", import.meta.url)), "utf8"));
+const packageInfo = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"));
 
 describe("Chrome extension manifest", () => {
+  it("matches the package release version", () => {
+    expect(manifest.version).toBe(packageInfo.version);
+  });
+
   it("uses Manifest V3 with a module service worker and restricted permissions", () => {
     expect(manifest.manifest_version).toBe(3);
     expect(manifest.background).toEqual({ service_worker: "background/service-worker.js", type: "module" });

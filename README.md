@@ -2,6 +2,12 @@
 
 LeetCode, Programmers, SWEA에서 Accepted된 코드를 `whoisyourbias/leetdash`의 날짜별 Draft PR에 자동으로 누적하는 Manifest V3 Chrome 확장 프로그램입니다.
 
+## 필수 참가자 등록
+
+확장에서 GitHub에 로그인할 계정은 **중앙 [`whoisyourbias/leetdash` 저장소의 `data/users.json`](https://github.com/whoisyourbias/leetdash/blob/master/data/users.json)**에 등록되어 있어야 합니다. 확장 프로그램 소스 저장소인 `whoisyourbias/leetdash-chrome-extension`의 파일을 뜻하지 않습니다.
+
+등록되지 않은 사용자는 중앙 저장소에서 `data/users.json`을 수정하는 PR을 먼저 만들어야 합니다. 등록이 기본 브랜치 `master`에 반영된 다음 확장 프로그램에 로그인할 수 있습니다.
+
 ## OAuth App 준비
 
 관리자는 GitHub `Settings > Developer settings > OAuth Apps`에서 팀용 OAuth App을 한 번 등록합니다.
@@ -50,11 +56,11 @@ OAuth Client ID는 공개 식별자이므로 릴리스 파일에 포함될 수 �
 ## 동작
 
 - 제출 버튼 또는 `Ctrl/Cmd+Enter` 시점의 코드와 언어를 캡처하고 10분 안에 Accepted 결과가 나타날 때만 큐에 넣습니다.
-- GitHub 계정은 `data/users.json`에 등록되어 있어야 하며, 문제는 `data/problem-catalog.json`에 존재해야 합니다.
+- GitHub 계정은 중앙 [`whoisyourbias/leetdash`의 `data/users.json`](https://github.com/whoisyourbias/leetdash/blob/master/data/users.json)에 등록되어 있어야 하며, 문제는 같은 저장소의 `data/problem-catalog.json`에 존재해야 합니다.
 - 경로는 provider별 canonical source인 `leetcode`, `programmers`, `swea`를 사용합니다.
 - 일반 참가자는 fork가 없으면 `<githubUsername>/leetdash`를 자동 생성합니다. 원본 저장소 소유자는 fork 대신 `submissions/<githubUsername>/YYMMDD` upstream branch를 사용하되 항상 Draft PR을 거칩니다.
 - Accepted 시각의 Asia/Seoul 날짜 `YYMMDD`를 branch와 Draft PR 제목으로 사용합니다.
 - 같은 문제를 다른 언어로 다시 통과하면 기존 `Solution.*`를 제거하고 최신 코드를 한 커밋으로 기록합니다.
-- KST 자정 이후 미동기화 큐가 없으면 Draft를 Ready로 바꿉니다. Chrome이 꺼져 있었다면 다음 시작이나 15분 주기 복구 작업에서 처리합니다.
+- 기본 설정에서는 KST 자정 이후 미동기화 큐가 없으면 Draft를 Ready로 바꿉니다. 팝업의 `자정 이후 자동 Ready 전환`을 끄면 Draft를 그대로 유지하며, 다시 켜면 다음 동기화에서 지난 날짜 Draft를 처리합니다. Chrome이 꺼져 있었다면 다음 시작이나 15분 주기 복구 작업에서 처리합니다.
 
 팝업의 `다시 동기화`는 네트워크 실패뿐 아니라 카탈로그 갱신 후 보류된 제출도 다시 검사합니다. 이미 Ready/closed/merged된 날짜 branch에는 새 커밋을 만들지 않고 확인 필요 상태로 남깁니다.

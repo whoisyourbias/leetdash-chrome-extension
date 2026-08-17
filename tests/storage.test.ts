@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getSyncActivity } from "../src/background/storage";
+import { getSettings, getSyncActivity } from "../src/background/storage";
 
 describe("sync activity storage", () => {
   beforeEach(() => {
@@ -39,5 +39,19 @@ describe("sync activity storage", () => {
     }));
 
     await expect(getSyncActivity()).resolves.toBeUndefined();
+  });
+
+  it("enables automatic Ready transition by default", async () => {
+    chrome.storage.local.get = vi.fn(async () => ({}));
+
+    await expect(getSettings()).resolves.toEqual({ autoReadyAfterMidnight: true });
+  });
+
+  it("restores a user's disabled automatic Ready setting", async () => {
+    chrome.storage.local.get = vi.fn(async () => ({
+      settings: { autoReadyAfterMidnight: false },
+    }));
+
+    await expect(getSettings()).resolves.toEqual({ autoReadyAfterMidnight: false });
   });
 });

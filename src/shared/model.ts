@@ -37,6 +37,10 @@ export interface SyncProgressEvent {
   message: string;
 }
 
+export interface ExtensionSettings {
+  autoReadyAfterMidnight: boolean;
+}
+
 export interface SubmissionQueueItem extends Omit<PendingAttempt, "code"> {
   code?: string;
   acceptedAt: string;
