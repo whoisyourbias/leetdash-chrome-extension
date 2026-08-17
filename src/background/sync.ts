@@ -9,15 +9,17 @@ import type {
   ProblemCatalog,
   SubmissionQueueItem,
   SyncProgressEvent,
+  SyncHistoryItem,
   SyncStage,
 } from "../shared/model.js";
 import { GitHubClient, GitHubError, submissionBranch } from "./github.js";
 import {
   getCatalogCache,
   getBranchClaims,
-  getDailyPulls,
-  getQueue,
+  getPendingQueue,
+  getPullSnapshots,
   getSettings,
+  getSyncHistory,
   removeStored,
   setStored,
   storageKeys,
@@ -31,14 +33,13 @@ export async function enqueueAccepted(
   attempt: PendingAttempt,
   acceptedAt = new Date().toISOString(),
 ): Promise<SubmissionQueueItem> {
-  const queue = await getQueue();
+  const queue = await getPendingQueue();
   const codeHash = await sha256(attempt.code);
   const date = toSeoulDate(acceptedAt);
   const duplicate = queue.find((item) => (
     item.provider === attempt.provider
     && item.pageUrl === attempt.pageUrl
     && item.codeHash === codeHash
-    && item.status !== "blocked"
   ));
   if (duplicate) return duplicate;
   const item: SubmissionQueueItem = {
@@ -51,7 +52,7 @@ export async function enqueueAccepted(
     attempts: 0,
   };
   queue.push(item);
-  await setStored(storageKeys.queue, queue.slice(-100));
+  await setStored(storageKeys.pendingQueue, queue);
   return item;
 }
 
@@ -89,10 +90,8 @@ async function syncItem(
   item: SubmissionQueueItem,
   auth: AuthState,
   client: GitHubClient,
-  dailyPulls: Record<string, DailyPullRequest>,
   report: ProgressReporter,
-): Promise<SubmissionQueueItem> {
-  if (!item.code) throw new GitHubError("동기화할 코드가 로컬 큐에 없습니다.", 422);
+): Promise<{ history: SyncHistoryItem; pull?: DailyPullRequest }> {
   await report("catalog", "문제 카탈로그를 확인하는 중입니다.");
   const catalog = await loadCatalog(client);
   await report("user", "GitHub 사용자 등록 정보를 확인하는 중입니다.");
@@ -120,14 +119,12 @@ async function syncItem(
   const branchState = await client.ensureBranch(fork, branch, (message) => report("branch", message));
   const branchClaims = await getBranchClaims();
   const claimKey = `${auth.login.toLowerCase()}:${item.date}`;
-  let dailyPull: DailyPullRequest | undefined = dailyPulls[item.date];
+  let dailyPull = await client.findManagedDraftPull(auth.login, branch, item.date);
   if (!dailyPull && !branchState.created && !branchState.atBase) {
-    dailyPull = await client.findManagedDraftPull(auth.login, branch, item.date);
-    if (!dailyPull && branchClaims[claimKey] !== branch) {
+    if (branchClaims[claimKey] !== branch) {
       throw new GitHubError(`${branch} branch가 이미 존재하며 확장 프로그램 소유로 확인되지 않았습니다.`, 422);
     }
   }
-  if (dailyPull) dailyPulls[item.date] = dailyPull;
   branchClaims[claimKey] = branch;
   await setStored(storageKeys.branchClaims, branchClaims);
   const commit = await client.commitSolution({
@@ -148,44 +145,120 @@ async function syncItem(
       item.date,
       (message) => report("pull-request", message),
     );
-    dailyPulls[item.date] = dailyPull;
   }
-  return {
-    ...item,
-    code: undefined,
+  const { code: _code, error: _error, blockReason: _blockReason, retryAt: _retryAt, ...completed } = item;
+  return { history: {
+    ...completed,
     status: "synced",
+    syncedAt: new Date().toISOString(),
     problemId: resolved.problem.problemId,
     problemTitle: resolved.problem.title,
     path: `${directory}/Solution.${extension}`,
     prUrl: dailyPull?.url,
-    error: undefined,
-    retryAt: undefined,
-  };
+  }, pull: dailyPull };
 }
 
-export async function closePastDrafts(
+function samePullState(left: DailyPullRequest | undefined, right: DailyPullRequest | undefined): boolean {
+  return left?.date === right?.date
+    && left?.compactDate === right?.compactDate
+    && left?.branch === right?.branch
+    && left?.number === right?.number
+    && left?.nodeId === right?.nodeId
+    && left?.url === right?.url
+    && left?.state === right?.state;
+}
+
+export async function pollPullRequests(
   auth: AuthState,
   client: GitHubClient,
   queue: SubmissionQueueItem[],
-  dailyPulls: Record<string, DailyPullRequest>,
+  pullSnapshots: Record<string, DailyPullRequest>,
   now = new Date(),
   autoReadyAfterMidnight = true,
 ): Promise<void> {
-  if (!autoReadyAfterMidnight) return;
   const today = toSeoulDate(now).date;
-  for (const [date, record] of Object.entries(dailyPulls).sort(([left], [right]) => left.localeCompare(right))) {
-    if (date >= today || !record.draft) continue;
-    const unfinished = queue.some((item) => item.date === date && item.status !== "synced");
-    if (unfinished) continue;
-    const live = await client.getPull(record.number);
-    if (live.state !== "open") {
-      dailyPulls[date] = { ...record, draft: false };
+  const previousDay = toSeoulDate(new Date(new Date(now).getTime() - 24 * 60 * 60 * 1000)).date;
+  const dates = new Set([today, previousDay, ...Object.keys(pullSnapshots), ...queue.map((item) => item.date)]);
+  let snapshotsChanged = false;
+  let queueChanged = false;
+
+  for (const date of [...dates].sort()) {
+    const compactDate = date.replaceAll("-", "").slice(2);
+    let pull: DailyPullRequest | undefined;
+    try {
+      pull = await client.findManagedPull(auth.login, submissionBranch(auth.login, compactDate), date);
+    } catch {
       continue;
     }
-    if (live.draft) await client.markReady(live.node_id ?? record.nodeId);
-    dailyPulls[date] = { ...record, nodeId: live.node_id ?? record.nodeId, draft: false };
+    if (!pull) {
+      if (pullSnapshots[date]) {
+        delete pullSnapshots[date];
+        snapshotsChanged = true;
+      }
+      continue;
+    }
+    const unfinished = queue.some((item) => item.date === date);
+    if (autoReadyAfterMidnight && date < today && pull.state === "draft" && !unfinished) {
+      try {
+        await client.markReady(pull.nodeId);
+        pull = { ...pull, state: "ready" };
+      } catch {
+        // Keep the live Draft snapshot and retry the Ready transition on the next poll.
+      }
+    }
+    if (date < today && (pull.state === "ready" || pull.state === "merged")) {
+      if (pullSnapshots[date]) {
+        delete pullSnapshots[date];
+        snapshotsChanged = true;
+      }
+      continue;
+    }
+    if (pull.state === "draft") {
+      for (let index = 0; index < queue.length; index += 1) {
+        const item = queue[index];
+        if (item.date === date && (item.blockReason === "pull_closed" || item.blockReason === "pull_ready")) {
+          queue[index] = { ...item, status: "pending", error: undefined, blockReason: undefined, retryAt: undefined };
+          queueChanged = true;
+        }
+      }
+    }
+    if (!samePullState(pullSnapshots[date], pull)) {
+      pullSnapshots[date] = pull;
+      snapshotsChanged = true;
+    }
   }
-  await setStored(storageKeys.dailyPulls, dailyPulls);
+  await Promise.all([
+    snapshotsChanged ? setStored(storageKeys.pullSnapshots, pullSnapshots) : Promise.resolve(),
+    queueChanged ? setStored(storageKeys.pendingQueue, queue) : Promise.resolve(),
+  ]);
+}
+
+export async function refreshTodayPull(
+  auth: AuthState,
+  client: GitHubClient,
+  pullSnapshots: Record<string, DailyPullRequest>,
+  now = new Date(),
+): Promise<{ date: string; pull?: DailyPullRequest }> {
+  const today = toSeoulDate(now);
+  const branch = submissionBranch(auth.login, today.compact);
+  const pull = await client.findManagedPull(auth.login, branch, today.date);
+  const changed = !samePullState(pullSnapshots[today.date], pull);
+
+  if (pull) pullSnapshots[today.date] = pull;
+  else delete pullSnapshots[today.date];
+  if (changed) await setStored(storageKeys.pullSnapshots, pullSnapshots);
+  return { date: today.date, pull };
+}
+
+export function moveCompletedToHistory(
+  queue: SubmissionQueueItem[],
+  index: number,
+  history: SyncHistoryItem[],
+  completed: SyncHistoryItem,
+): void {
+  queue.splice(index, 1);
+  history.push(completed);
+  if (history.length > 100) history.splice(0, history.length - 100);
 }
 
 export async function synchronize(
@@ -194,15 +267,23 @@ export async function synchronize(
   onProgress?: (event: SyncProgressEvent) => void | Promise<void>,
 ): Promise<void> {
   const client = new GitHubClient(auth.token, fetchImpl);
-  const queue = await getQueue();
-  const dailyPulls = await getDailyPulls();
+  const [queue, history, pullSnapshots, settings] = await Promise.all([
+    getPendingQueue(), getSyncHistory(), getPullSnapshots(), getSettings(),
+  ]);
+  await pollPullRequests(auth, client, queue, pullSnapshots, new Date(), settings.autoReadyAfterMidnight);
 
-  for (let index = 0; index < queue.length; index += 1) {
+  for (let index = 0; index < queue.length;) {
     const current = queue[index];
-    if (current.status === "synced" || current.status === "blocked") continue;
-    if (current.retryAt && Date.parse(current.retryAt) > Date.now()) continue;
+    if (current.status === "blocked") {
+      index += 1;
+      continue;
+    }
+    if (current.retryAt && Date.parse(current.retryAt) > Date.now()) {
+      index += 1;
+      continue;
+    }
     queue[index] = { ...current, status: "syncing", attempts: current.attempts + 1 };
-    await setStored(storageKeys.queue, queue);
+    await setStored(storageKeys.pendingQueue, queue);
     let activeStage: SyncStage = "catalog";
     const title = current.problemTitle ?? current.pageTitle ?? `${current.provider} 제출`;
     const report: ProgressReporter = async (stage, message) => {
@@ -217,17 +298,20 @@ export async function synchronize(
     };
     try {
       await report("catalog", "동기화를 시작합니다.");
-      queue[index] = await syncItem(queue[index], auth, client, dailyPulls, report);
+      const completed = await syncItem(queue[index], auth, client, report);
+      moveCompletedToHistory(queue, index, history, completed.history);
+      if (completed.pull) pullSnapshots[completed.pull.date] = completed.pull;
       await Promise.all([
-        setStored(storageKeys.queue, queue),
-        setStored(storageKeys.dailyPulls, dailyPulls),
+        setStored(storageKeys.pendingQueue, queue),
+        setStored(storageKeys.syncHistory, history),
+        setStored(storageKeys.pullSnapshots, pullSnapshots),
       ]);
       await onProgress?.({
         itemId: current.id,
-        title: queue[index].problemTitle ?? title,
+        title: completed.history.problemTitle ?? title,
         stage: "complete",
         status: "completed",
-        message: queue[index].prUrl ? "Draft PR 업로드를 완료했습니다." : "GitHub 동기화를 완료했습니다.",
+        message: completed.history.prUrl ? "Draft PR 업로드를 완료했습니다." : "GitHub 동기화를 완료했습니다.",
       });
     } catch (error) {
       const attempts = queue[index].attempts;
@@ -235,9 +319,10 @@ export async function synchronize(
         ...queue[index],
         status: isBlocked(error) ? "blocked" : "pending",
         error: error instanceof Error ? error.message : "알 수 없는 동기화 오류입니다.",
+        blockReason: error instanceof GitHubError ? error.blockReason : undefined,
         retryAt: isBlocked(error) ? undefined : new Date(Date.now() + retryDelay(attempts, error)).toISOString(),
       };
-      await setStored(storageKeys.queue, queue);
+      await setStored(storageKeys.pendingQueue, queue);
       await onProgress?.({
         itemId: current.id,
         title,
@@ -245,8 +330,7 @@ export async function synchronize(
         status: "failed",
         message: queue[index].error ?? "알 수 없는 동기화 오류입니다.",
       });
+      index += 1;
     }
   }
-  const settings = await getSettings();
-  await closePastDrafts(auth, client, queue, dailyPulls, new Date(), settings.autoReadyAfterMidnight);
 }

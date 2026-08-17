@@ -15,7 +15,9 @@ export interface PendingAttempt extends EditorSnapshot {
   capturedAt: string;
 }
 
-export type QueueStatus = "pending" | "syncing" | "synced" | "blocked";
+export type QueueStatus = "pending" | "syncing" | "blocked";
+
+export type PullBlockReason = "pull_closed" | "pull_merged" | "pull_ready";
 
 export type SyncStage = "catalog" | "user" | "fork" | "branch" | "commit" | "pull-request" | "complete";
 
@@ -41,8 +43,7 @@ export interface ExtensionSettings {
   autoReadyAfterMidnight: boolean;
 }
 
-export interface SubmissionQueueItem extends Omit<PendingAttempt, "code"> {
-  code?: string;
+export interface SubmissionQueueItem extends PendingAttempt {
   acceptedAt: string;
   codeHash: string;
   compactDate: string;
@@ -53,8 +54,14 @@ export interface SubmissionQueueItem extends Omit<PendingAttempt, "code"> {
   path?: string;
   prUrl?: string;
   error?: string;
+  blockReason?: PullBlockReason;
   retryAt?: string;
   attempts: number;
+}
+
+export interface SyncHistoryItem extends Omit<SubmissionQueueItem, "code" | "status" | "error" | "blockReason" | "retryAt"> {
+  status: "synced";
+  syncedAt: string;
 }
 
 export interface AuthState {
@@ -73,6 +80,8 @@ export interface DeviceSession {
   error?: string;
 }
 
+export type PullRequestState = "draft" | "ready" | "closed" | "merged";
+
 export interface DailyPullRequest {
   date: string;
   compactDate: string;
@@ -80,7 +89,7 @@ export interface DailyPullRequest {
   number: number;
   nodeId: string;
   url: string;
-  draft: boolean;
+  state: PullRequestState;
 }
 
 export interface CatalogProblem {

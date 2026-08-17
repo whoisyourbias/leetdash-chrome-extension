@@ -1,21 +1,22 @@
 import { pollDeviceFlow, startDeviceFlow } from "./auth.js";
 import {
   getAuth,
-  getDailyPulls,
   getDeviceSession,
   getPendingAttempts,
-  getQueue,
+  getPendingQueue,
+  getPullSnapshots,
   getSettings,
   getSyncActivity,
+  getSyncHistory,
   removeStored,
   setStored,
   storageKeys,
 } from "./storage.js";
-import { enqueueAccepted, synchronize } from "./sync.js";
+import { enqueueAccepted, refreshTodayPull, synchronize } from "./sync.js";
 import { GitHubClient } from "./github.js";
-import { nextSeoulMidnight } from "../shared/date.js";
+import { nextSeoulMidnight, toSeoulDate } from "../shared/date.js";
 import { providerForUrl } from "../shared/catalog.js";
-import type { EditorSnapshot, PendingAttempt, Provider, SyncProgressEvent } from "../shared/model.js";
+import type { DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SyncProgressEvent } from "../shared/model.js";
 
 const SYNC_ALARM = "submission-sync";
 const CLOSE_ALARM = "day-close";
@@ -186,7 +187,9 @@ async function acceptAttempt(sender: any): Promise<any> {
   await setStored(storageKeys.pendingAttempts, pending);
   const item = await enqueueAccepted(attempt);
   void runSynchronization().then(async () => {
-    const updated = (await getQueue()).find((candidate) => candidate.id === item.id);
+    const [queue, history] = await Promise.all([getPendingQueue(), getSyncHistory()]);
+    const updated = queue.find((candidate) => candidate.id === item.id)
+      ?? history.find((candidate) => candidate.id === item.id);
     if (updated) {
       void chrome.tabs.sendMessage(tabId, {
         type: "sync-status",
@@ -202,14 +205,29 @@ async function acceptAttempt(sender: any): Promise<any> {
 }
 
 async function publicState(): Promise<any> {
-  const [auth, deviceSession, queue, dailyPulls, settings, syncActivity] = await Promise.all([
-    getAuth(), getDeviceSession(), getQueue(), getDailyPulls(), getSettings(), getSyncActivity(),
+  const [auth, deviceSession, queue, history, pullSnapshots, settings, syncActivity] = await Promise.all([
+    getAuth(), getDeviceSession(), getPendingQueue(), getSyncHistory(), getPullSnapshots(), getSettings(), getSyncActivity(),
   ]);
+  let today = toSeoulDate(new Date()).date;
+  let todayPull: DailyPullRequest | undefined = pullSnapshots[today];
+  if (auth) {
+    try {
+      const refreshed = await refreshTodayPull(auth, new GitHubClient(auth.token), pullSnapshots);
+      today = refreshed.date;
+      todayPull = refreshed.pull;
+    } catch {
+      // Keep the cached record available when GitHub cannot be reached.
+    }
+  }
+  const recentSubmissions = [...history, ...queue.map(({ code: _code, ...item }) => item)]
+    .sort((left, right) => left.acceptedAt.localeCompare(right.acceptedAt))
+    .slice(-20);
   return {
     auth: auth ? { login: auth.login, avatarUrl: auth.avatarUrl } : undefined,
     deviceSession,
-    queue: queue.slice(-20).map(({ code: _code, ...item }) => item),
-    dailyPulls,
+    queue: recentSubmissions,
+    today,
+    todayPull,
     settings,
     syncActivity,
   };
@@ -230,15 +248,17 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       await pollAuthentication();
       return publicState();
     case "auth:logout": {
-      const queue = await getQueue();
-      const unsynced = queue.some((item) => item.status !== "synced");
-      if (unsynced && !message.force) return { needsConfirmation: true };
+      const queue = await getPendingQueue();
+      if (queue.length > 0 && !message.force) return { needsConfirmation: true };
       await Promise.all([
         removeStored(storageKeys.auth),
+        removeStored(storageKeys.branchClaims),
         removeStored(storageKeys.deviceSession),
         removeStored(storageKeys.pendingAttempts),
+        removeStored(storageKeys.pullSnapshots),
+        removeStored(storageKeys.syncHistory),
         removeStored(storageKeys.syncActivity),
-        message.force ? setStored(storageKeys.queue, queue.filter((item) => item.status === "synced")) : Promise.resolve(),
+        message.force ? setStored(storageKeys.pendingQueue, []) : Promise.resolve(),
       ]);
       return publicState();
     }
@@ -247,15 +267,16 @@ async function handleMessage(message: any, sender: any): Promise<any> {
     case "submission-accepted":
       return acceptAttempt(sender);
     case "queue:retry": {
-      const queue = await getQueue();
+      const queue = await getPendingQueue();
       for (const item of queue) {
         if (item.status === "blocked" || item.status === "pending") {
           item.status = "pending";
           item.error = undefined;
+          item.blockReason = undefined;
           item.retryAt = undefined;
         }
       }
-      await setStored(storageKeys.queue, queue);
+      await setStored(storageKeys.pendingQueue, queue);
       await runSynchronization();
       return publicState();
     }
