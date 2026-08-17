@@ -78,19 +78,42 @@ function problemIdHint(): string | undefined {
     // Cross-origin frames can only inspect their own document.
   }
   const selectors = [
-    "[class*='problem'] [class*='num']",
-    "[class*='problem'] [class*='title']",
-    ".week_num",
     "h1, h2, h3, h4",
+    "[class*='problem'] [class*='title']",
+    "[class*='problem'][class*='title']",
+    "[id*='problem'][id*='title']",
+    "[class*='problem'] [class*='num']",
+    ".week_num",
   ];
   for (const selector of selectors) {
     for (const element of problemDocument.querySelectorAll(selector)) {
-      const match = /^\s*(\d{1,8})\s*\./.exec(element.textContent ?? "");
-      if (match) return match[1];
+      for (const line of (element.textContent ?? "").split(/\r?\n/)) {
+        const match = /^\s*(\d{3,8})\s*\.\s*\S/.exec(line);
+        if (match) return match[1];
+      }
     }
   }
-  const bodyMatch = /(?:^|\n)\s*(\d{1,8})\s*\.\s*\S/m.exec(problemDocument.body?.innerText ?? "");
+  const bodyMatch = /(?:^|\n)\s*(\d{3,8})\s*\.\s*\S/m.exec(problemDocument.body?.innerText ?? "");
   return bodyMatch?.[1];
+}
+
+function problemPageTitle(): string {
+  if (provider !== "swea") return document.title;
+  let problemDocument = document;
+  try {
+    if (window.top?.document) problemDocument = window.top.document;
+  } catch {
+    // Cross-origin frames can only inspect their own document.
+  }
+  const problemId = problemIdHint();
+  if (problemId) {
+    const pattern = new RegExp(`^\\s*${problemId}\\s*\\.\\s*\\S`);
+    for (const element of problemDocument.querySelectorAll("h1, h2, h3, h4, [class*='problem'] [class*='title'], [class*='problem'][class*='title']")) {
+      const title = (element.textContent ?? "").split(/\r?\n/).map((line) => line.trim()).find((line) => pattern.test(line));
+      if (title) return title;
+    }
+  }
+  return problemDocument.title || document.title;
 }
 
 function showToast(message: string, status: "info" | "success" | "error" = "info", link?: string): void {
@@ -131,12 +154,7 @@ async function armCapture(): Promise<boolean> {
   acceptedSent = false;
   acceptedBaseline = acceptedText();
   sawResultReset = !hasAcceptedResult(acceptedBaseline);
-  let pageTitle = document.title;
-  try {
-    pageTitle = window.top?.document.title || pageTitle;
-  } catch {
-    // Keep the current frame title when the top frame is cross-origin.
-  }
+  const pageTitle = problemPageTitle();
   const response = await chrome.runtime.sendMessage({
     type: "capture-attempt",
     provider,
@@ -226,9 +244,12 @@ if (provider) {
     if (mutationTimer !== undefined) window.clearTimeout(mutationTimer);
     mutationTimer = window.setTimeout(() => { void inspectResult(); }, 250);
   }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-  chrome.runtime.onMessage.addListener((message: any) => {
+  chrome.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: (response: any) => void) => {
     if (message?.type === "sync-status") {
       showToast(message.message, message.status === "synced" ? "success" : "error", message.prUrl);
+    }
+    if (message?.type === "problem-metadata:get") {
+      sendResponse({ problemIdHint: problemIdHint(), pageTitle: problemPageTitle() });
     }
   });
 }

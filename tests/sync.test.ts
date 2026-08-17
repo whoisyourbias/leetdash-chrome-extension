@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
-import type { AuthState, DailyPullRequest, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
+import { enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
+import type { AuthState, DailyPullRequest, PendingAttempt, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
 
 const auth: AuthState = { login: "ada", token: "token" };
 const record: DailyPullRequest = {
@@ -15,8 +15,18 @@ const record: DailyPullRequest = {
 };
 
 beforeEach(() => {
+  const stored: Record<string, any> = {};
   (globalThis as any).chrome = {
-    storage: { local: { set: vi.fn(async () => {}) } },
+    storage: { local: {
+      get: vi.fn(async (keys: string | string[]) => {
+        if (Array.isArray(keys)) return Object.fromEntries(keys.filter((key) => key in stored).map((key) => [key, stored[key]]));
+        return keys in stored ? { [keys]: stored[keys] } : {};
+      }),
+      set: vi.fn(async (updates: Record<string, any>) => { Object.assign(stored, updates); }),
+      remove: vi.fn(async (keys: string | string[]) => {
+        for (const key of Array.isArray(keys) ? keys : [keys]) delete stored[key];
+      }),
+    } },
   };
 });
 
@@ -127,6 +137,52 @@ describe("today pull refresh", () => {
 });
 
 describe("pending queue completion", () => {
+  it("repairs a duplicate blocked item with newly captured SWEA metadata", async () => {
+    const blocked = {
+      id: "submission",
+      provider: "swea",
+      pageUrl: "https://swexpertacademy.com/main/solvingProblem/solvingProblem.do",
+      problemIdHint: "10",
+      pageTitle: "SW Expert Academy",
+      tabId: 1,
+      capturedAt: "2026-08-17T01:00:00Z",
+      acceptedAt: "2026-08-17T01:01:00Z",
+      compactDate: "260817",
+      date: "2026-08-17",
+      code: "class Main {}",
+      codeHash: await crypto.subtle.digest("SHA-256", new TextEncoder().encode("class Main {}"))
+        .then((value) => [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("")),
+      language: "java",
+      status: "blocked",
+      error: "현재 문제를 leetdash 카탈로그에서 찾지 못했습니다.",
+      attempts: 1,
+    } as SubmissionQueueItem;
+    await chrome.storage.local.set({ pendingQueue: [blocked], syncHistory: [], pullSnapshots: {} });
+    const repairedAttempt = {
+      id: "new-attempt",
+      provider: "swea",
+      pageUrl: blocked.pageUrl,
+      problemIdHint: "2071",
+      pageTitle: "2071. 평균값 구하기",
+      tabId: 1,
+      frameId: 0,
+      capturedAt: "2026-08-17T01:02:00Z",
+      code: blocked.code,
+      language: "java",
+    } as PendingAttempt;
+
+    const repaired = await enqueueAccepted(repairedAttempt, "2026-08-17T01:03:00Z");
+
+    expect(repaired).toMatchObject({
+      id: "submission",
+      problemIdHint: "2071",
+      pageTitle: "2071. 평균값 구하기",
+      status: "pending",
+      error: undefined,
+    });
+    expect(chrome.storage.local.set).toHaveBeenLastCalledWith({ pendingQueue: [repaired] });
+  });
+
   it("removes synchronized work from the code-bearing queue and retains only code-free history", () => {
     const queue = [{ id: "submission", code: "secret", status: "syncing" }] as SubmissionQueueItem[];
     const history: SyncHistoryItem[] = [];

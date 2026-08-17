@@ -41,7 +41,17 @@ export async function enqueueAccepted(
     && item.pageUrl === attempt.pageUrl
     && item.codeHash === codeHash
   ));
-  if (duplicate) return duplicate;
+  if (duplicate) {
+    Object.assign(duplicate, attempt, {
+      id: duplicate.id,
+      status: "pending",
+      error: undefined,
+      blockReason: undefined,
+      retryAt: undefined,
+    });
+    await setStored(storageKeys.pendingQueue, queue);
+    return duplicate;
+  }
   const item: SubmissionQueueItem = {
     ...attempt,
     acceptedAt,

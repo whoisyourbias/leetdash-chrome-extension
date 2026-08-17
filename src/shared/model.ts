@@ -12,6 +12,7 @@ export interface PendingAttempt extends EditorSnapshot {
   pageTitle: string;
   pageUrl: string;
   tabId: number;
+  frameId?: number;
   capturedAt: string;
 }
 
