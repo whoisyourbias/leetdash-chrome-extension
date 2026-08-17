@@ -7,6 +7,7 @@ import type {
   DailyPullRequest,
   PendingAttempt,
   ProblemCatalog,
+  Provider,
   SubmissionQueueItem,
   SyncProgressEvent,
   SyncHistoryItem,
@@ -41,7 +42,17 @@ export async function enqueueAccepted(
     && item.pageUrl === attempt.pageUrl
     && item.codeHash === codeHash
   ));
-  if (duplicate) return duplicate;
+  if (duplicate) {
+    Object.assign(duplicate, attempt, {
+      id: duplicate.id,
+      status: "pending",
+      error: undefined,
+      blockReason: undefined,
+      retryAt: undefined,
+    });
+    await setStored(storageKeys.pendingQueue, queue);
+    return duplicate;
+  }
   const item: SubmissionQueueItem = {
     ...attempt,
     acceptedAt,
@@ -69,6 +80,82 @@ async function loadCatalog(client: GitHubClient): Promise<ProblemCatalog> {
   const next: CatalogCache = { schemaVersion: 1, fetchedAt: new Date().toISOString(), catalog };
   await setStored(storageKeys.catalog, next);
   return catalog;
+}
+
+export function applyProblemOverride(
+  item: SubmissionQueueItem,
+  catalog: ProblemCatalog,
+  provider: Provider,
+  problemId: string,
+  updatedAt = new Date().toISOString(),
+): SubmissionQueueItem {
+  if (item.status === "syncing") throw new Error("업로드 중인 제출은 문제 정보를 수정할 수 없습니다.");
+  const normalizedProblemId = problemId.trim();
+  if (!/^\d{1,8}$/.test(normalizedProblemId)) throw new Error("문제 번호는 1~8자리 숫자로 입력하세요.");
+  const resolved = resolveCatalogProblem(
+    catalog,
+    item.provider,
+    item.pageUrl,
+    item.problemIdHint,
+    { provider, problemId: normalizedProblemId },
+  );
+  if (!resolved) throw new Error(`${provider} ${normalizedProblemId} 문제를 leetdash 카탈로그에서 찾지 못했습니다.`);
+  return {
+    ...item,
+    status: "pending",
+    problemId: resolved.problem.problemId,
+    problemTitle: resolved.problem.title,
+    problemOverride: {
+      provider,
+      problemId: resolved.problem.problemId,
+      problemTitle: resolved.problem.title,
+      updatedAt,
+    },
+    error: undefined,
+    blockReason: undefined,
+    retryAt: undefined,
+  };
+}
+
+export async function saveProblemOverride(
+  auth: AuthState,
+  itemId: string,
+  provider: Provider,
+  problemId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<SubmissionQueueItem> {
+  let queue = await getPendingQueue();
+  let index = queue.findIndex((item) => item.id === itemId);
+  if (index < 0) throw new Error("수정할 미동기화 제출을 찾지 못했습니다.");
+  if (queue[index].status === "syncing") throw new Error("업로드 중인 제출은 문제 정보를 수정할 수 없습니다.");
+  const catalog = await loadCatalog(new GitHubClient(auth.token, fetchImpl));
+  queue = await getPendingQueue();
+  index = queue.findIndex((item) => item.id === itemId);
+  if (index < 0) throw new Error("문제 정보를 확인하는 동안 제출 동기화가 완료되었습니다.");
+  const updated = applyProblemOverride(queue[index], catalog, provider, problemId);
+  queue[index] = updated;
+  await setStored(storageKeys.pendingQueue, queue);
+  return updated;
+}
+
+export async function clearProblemOverride(itemId: string): Promise<SubmissionQueueItem> {
+  const queue = await getPendingQueue();
+  const index = queue.findIndex((item) => item.id === itemId);
+  if (index < 0) throw new Error("수정할 미동기화 제출을 찾지 못했습니다.");
+  if (queue[index].status === "syncing") throw new Error("업로드 중인 제출은 문제 정보를 수정할 수 없습니다.");
+  const {
+    problemOverride: _problemOverride,
+    problemId: _problemId,
+    problemTitle: _problemTitle,
+    error: _error,
+    blockReason: _blockReason,
+    retryAt: _retryAt,
+    ...detected
+  } = queue[index];
+  const updated: SubmissionQueueItem = { ...detected, status: "pending" };
+  queue[index] = updated;
+  await setStored(storageKeys.pendingQueue, queue);
+  return updated;
 }
 
 function retryDelay(attempts: number, error: unknown): number {
@@ -104,7 +191,13 @@ async function syncItem(
       422,
     );
   }
-  const resolved = resolveCatalogProblem(catalog, item.provider, item.pageUrl, item.problemIdHint);
+  const resolved = resolveCatalogProblem(
+    catalog,
+    item.provider,
+    item.pageUrl,
+    item.problemIdHint,
+    item.problemOverride,
+  );
   if (!resolved) throw new GitHubError("현재 문제를 leetdash 카탈로그에서 찾지 못했습니다.", 422);
   const extension = languageExtension(item.language);
   if (!extension) throw new GitHubError(`${item.language || "알 수 없는 언어"}는 지원하지 않는 언어입니다.`, 422);
@@ -133,7 +226,7 @@ async function syncItem(
     directory,
     extension,
     code: item.code,
-    message: `solve: ${item.provider} ${resolved.problem.problemId}`,
+    message: `solve: ${resolved.problem.provider} ${resolved.problem.problemId}`,
     onProgress: (message) => report("commit", message),
   });
 

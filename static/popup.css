@@ -38,6 +38,21 @@ a { color: #2563eb; font-size: 12px; font-weight: 700; }
 .queue-title { overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .queue-status { margin: 3px 0; color: #64748b; font-size: 11px; }
 .queue-item.status-blocked { border-color: #fecaca; }
+.problem-metadata { display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #e2e8f0; font-size: 10px; }
+.problem-metadata dt { color: #64748b; }
+.problem-metadata dd { margin: 0; font-weight: 700; text-align: right; }
+.problem-metadata .manual-value { color: #1d4ed8; }
+.inline-button { width: auto; margin-top: 8px; border: 0; background: transparent; color: #2563eb; padding: 0; font: inherit; font-size: 10px; font-weight: 800; cursor: pointer; }
+.inline-button:disabled { cursor: wait; opacity: .6; }
+.problem-editor { display: grid; gap: 7px; margin-top: 8px; padding: 9px; border-radius: 8px; background: #f8fafc; }
+.problem-editor[hidden] { display: none; }
+.problem-editor label { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 8px; color: #475569; font-size: 10px; font-weight: 700; }
+.problem-editor select, .problem-editor input { min-width: 0; width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; background: white; padding: 6px 7px; color: #172033; font: inherit; font-size: 11px; }
+.editor-feedback { min-height: 14px; margin: 0; color: #b91c1c; font-size: 10px; line-height: 1.4; }
+.editor-actions { display: flex; align-items: center; gap: 10px; }
+.editor-actions .inline-button { margin-top: 0; }
+.inline-button.primary { border-radius: 6px; background: #2563eb; color: white; padding: 6px 8px; }
+.inline-button.subtle { color: #64748b; }
 .notice { border-radius: 8px; padding: 9px; font-size: 12px; }
 .notice.error { background: #fee2e2; color: #991b1b; }
 .sync-card { margin-top: 10px; }

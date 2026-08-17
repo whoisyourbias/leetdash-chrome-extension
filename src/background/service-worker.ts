@@ -12,11 +12,11 @@ import {
   setStored,
   storageKeys,
 } from "./storage.js";
-import { enqueueAccepted, refreshTodayPull, synchronize } from "./sync.js";
+import { clearProblemOverride, enqueueAccepted, refreshTodayPull, saveProblemOverride, synchronize } from "./sync.js";
 import { GitHubClient } from "./github.js";
 import { nextSeoulMidnight, toSeoulDate } from "../shared/date.js";
 import { providerForUrl } from "../shared/catalog.js";
-import type { DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SyncProgressEvent } from "../shared/model.js";
+import type { DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SubmissionQueueItem, SyncProgressEvent } from "../shared/model.js";
 
 const SYNC_ALARM = "submission-sync";
 const CLOSE_ALARM = "day-close";
@@ -140,6 +140,81 @@ function readEditorSnapshot(provider: Provider): EditorSnapshot {
   return { code, language };
 }
 
+function readSweaProblemMetadata(): { problemIdHint?: string; pageTitle?: string } {
+  const documents: Document[] = [document];
+  try {
+    if (window.top?.document && window.top.document !== document) documents.unshift(window.top.document);
+  } catch {
+    // Cross-origin frames can only inspect their own document.
+  }
+  const urls: URL[] = [new URL(location.href)];
+  try {
+    if (window.top?.location.href && window.top.location.href !== location.href) urls.unshift(new URL(window.top.location.href));
+  } catch {
+    // Cross-origin frames can only inspect their own URL.
+  }
+  for (const pageUrl of urls) {
+    const value = pageUrl.searchParams.get("problemId") ?? pageUrl.searchParams.get("problemTitle");
+    const match = /^\s*(\d{1,8})(?:\s*\.|\s|$)/.exec(value ?? "");
+    if (match) return { problemIdHint: match[1] };
+  }
+  const selectors = [
+    "h1, h2, h3, h4",
+    "[class*='problem'] [class*='title']",
+    "[class*='problem'][class*='title']",
+    "[id*='problem'][id*='title']",
+    "[class*='problem'] [class*='num']",
+    ".week_num",
+  ];
+  for (const pageDocument of documents) {
+    for (const selector of selectors) {
+      for (const element of pageDocument.querySelectorAll(selector)) {
+        for (const line of (element.textContent ?? "").split(/\r?\n/)) {
+          const match = /^\s*(\d{3,8})\s*\.\s*\S/.exec(line);
+          if (match) return { problemIdHint: match[1], pageTitle: line.trim() };
+        }
+      }
+    }
+    const bodyMatch = /(?:^|\n)\s*(\d{3,8})\s*\.\s*([^\n]+)/m.exec(pageDocument.body?.innerText ?? "");
+    if (bodyMatch) return { problemIdHint: bodyMatch[1], pageTitle: `${bodyMatch[1]}. ${bodyMatch[2].trim()}` };
+  }
+  return {};
+}
+
+async function refreshProblemMetadata(item: SubmissionQueueItem): Promise<void> {
+  if (item.provider !== "swea" || !Number.isInteger(item.tabId)) return;
+  const hasCapturedFrame = Number.isInteger(item.frameId);
+  const preferredFrame = hasCapturedFrame ? item.frameId! : 0;
+  let metadata: { problemIdHint?: string; pageTitle?: string } | undefined;
+  try {
+    metadata = await chrome.tabs.sendMessage(
+      item.tabId,
+      { type: "problem-metadata:get" },
+      { frameId: preferredFrame },
+    );
+  } catch {
+    // The content script may not be installed in a tab that stayed open across an extension reload.
+  }
+  const targets = hasCapturedFrame
+    ? [...new Set([preferredFrame, 0])].map((frameId) => ({ tabId: item.tabId, frameIds: [frameId] }))
+    : [{ tabId: item.tabId, allFrames: true }];
+  for (const target of targets) {
+    if (metadata?.problemIdHint) break;
+    try {
+      const execution = await chrome.scripting.executeScript({
+        target,
+        func: readSweaProblemMetadata,
+      });
+      metadata = execution?.map((entry: any) => entry.result)
+        .find((result: any) => typeof result?.problemIdHint === "string");
+    } catch {
+      // Keep the queued metadata when the original tab or frame is no longer available.
+    }
+  }
+  if (typeof metadata?.problemIdHint === "string") item.problemIdHint = metadata.problemIdHint;
+  if (typeof metadata?.pageTitle === "string" && metadata.pageTitle.trim()) item.pageTitle = metadata.pageTitle.trim();
+}
+
 async function captureAttempt(message: any, sender: any): Promise<any> {
   const tabId = sender.tab?.id;
   const frameId = Number.isInteger(sender.frameId) ? sender.frameId : 0;
@@ -164,6 +239,7 @@ async function captureAttempt(message: any, sender: any): Promise<any> {
     pageTitle: String(message.pageTitle ?? ""),
     pageUrl: senderUrl,
     tabId,
+    frameId,
     capturedAt: new Date().toISOString(),
     code: snapshot.code,
     language: snapshot.language || String(message.languageHint ?? ""),
@@ -270,6 +346,9 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       const queue = await getPendingQueue();
       for (const item of queue) {
         if (item.status === "blocked" || item.status === "pending") {
+          if (item.provider === "swea" && item.error?.includes("카탈로그")) {
+            await refreshProblemMetadata(item);
+          }
           item.status = "pending";
           item.error = undefined;
           item.blockReason = undefined;
@@ -277,6 +356,24 @@ async function handleMessage(message: any, sender: any): Promise<any> {
         }
       }
       await setStored(storageKeys.pendingQueue, queue);
+      await runSynchronization();
+      return publicState();
+    }
+    case "queue:problem-override": {
+      const auth = await getAuth();
+      if (!auth) throw new Error("GitHub 로그인이 필요합니다.");
+      if (typeof message.itemId !== "string") throw new Error("수정할 제출 정보가 올바르지 않습니다.");
+      if (!["leetcode", "programmers", "swea"].includes(message.provider)) {
+        throw new Error("지원하지 않는 공급자입니다.");
+      }
+      if (typeof message.problemId !== "string") throw new Error("문제 번호가 올바르지 않습니다.");
+      await saveProblemOverride(auth, message.itemId, message.provider as Provider, message.problemId);
+      await runSynchronization();
+      return publicState();
+    }
+    case "queue:problem-override:clear": {
+      if (typeof message.itemId !== "string") throw new Error("수정할 제출 정보가 올바르지 않습니다.");
+      await clearProblemOverride(message.itemId);
       await runSynchronization();
       return publicState();
     }

@@ -58,6 +58,8 @@ OAuth Client ID는 공개 식별자이므로 릴리스 파일에 포함될 수 �
 - 제출 버튼 또는 `Ctrl/Cmd+Enter` 시점의 코드와 언어를 캡처하고 10분 안에 Accepted 결과가 나타날 때만 큐에 넣습니다.
 - GitHub 계정은 중앙 [`whoisyourbias/leetdash`의 `data/users.json`](https://github.com/whoisyourbias/leetdash/blob/master/data/users.json)에 등록되어 있어야 하며, 문제는 같은 저장소의 `data/problem-catalog.json`에 존재해야 합니다.
 - 경로는 provider별 canonical source인 `leetcode`, `programmers`, `swea`를 사용합니다.
+- 팝업의 미동기화 제출에는 자동 감지된 provider와 문제 번호가 표시됩니다. `pending` 또는 `blocked` 항목에서 이를 수정하면 중앙 카탈로그 검증을 통과한 값이 `problemOverride`로 저장되고 즉시 다시 동기화됩니다.
+- 사용자가 저장한 `problemOverride`는 자동 재감지, 중복 Accepted 캡처, 재시도보다 항상 우선합니다. 팝업에서 명시적으로 `자동 감지로 되돌리기`를 선택해야만 제거됩니다.
 - 일반 참가자는 fork가 없으면 `<githubUsername>/leetdash`를 자동 생성합니다. 원본 저장소 소유자는 fork 대신 `submissions/<githubUsername>/YYMMDD` upstream branch를 사용하되 항상 Draft PR을 거칩니다.
 - Accepted 시각의 Asia/Seoul 날짜 `YYMMDD`를 branch와 Draft PR 제목으로 사용합니다.
 - 같은 문제를 다른 언어로 다시 통과하면 기존 `Solution.*`를 제거하고 최신 코드를 한 커밋으로 기록합니다.
@@ -79,7 +81,7 @@ GitHub 상태 폴링은 팝업을 열 때, 확장 프로그램 시작 시, 제�
 로컬 저장소의 역할은 다음과 같습니다.
 
 - `pendingAttempts`: 제출 코드를 캡처한 후 Accepted 결과를 기다리는 10분 이내의 임시 데이터
-- `pendingQueue`: Accepted는 확인됐지만 GitHub 동기화가 완료되지 않은 코드. 동기화 성공 시 즉시 제거
+- `pendingQueue`: Accepted는 확인됐지만 GitHub 동기화가 완료되지 않은 코드와 문제 자동 감지값. 사용자가 문제 정보를 수정한 경우 카탈로그 검증을 마친 `problemOverride`도 함께 보관하며, 동기화 시 `problemOverride > 자동 감지값` 순서로 해석합니다. 동기화 성공 시 즉시 제거
 - `syncHistory`: 최근 동기화 완료 내역. 소스 코드 없이 최대 100개 보관
 - `pullSnapshots`: GitHub PR 상태의 비권위적 캐시
 - `branchClaims`: PR이 아직 없는 branch가 확장 프로그램이 생성한 branch인지 확인하기 위한 로컬 소유 기록
