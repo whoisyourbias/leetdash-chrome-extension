@@ -249,7 +249,7 @@ if (provider) {
       showToast(message.message, message.status === "synced" ? "success" : "error", message.prUrl);
     }
     if (message?.type === "problem-metadata:get") {
-      sendResponse({ problemIdHint: problemIdHint(), pageTitle: problemPageTitle() });
+      sendResponse({ problemIdHint: problemIdHint(), pageTitle: problemPageTitle(), pageUrl: url.href });
     }
   });
 }

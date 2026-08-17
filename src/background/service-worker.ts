@@ -4,6 +4,7 @@ import {
   getDeviceSession,
   getPendingAttempts,
   getPendingQueue,
+  getProblemOverrides,
   getPullSnapshots,
   getSettings,
   getSyncActivity,
@@ -12,11 +13,21 @@ import {
   setStored,
   storageKeys,
 } from "./storage.js";
-import { clearProblemOverride, enqueueAccepted, refreshTodayPull, saveProblemOverride, synchronize } from "./sync.js";
+import {
+  clearActiveProblemOverride,
+  clearProblemOverride,
+  enqueueAccepted,
+  loadCatalog,
+  refreshTodayPull,
+  saveActiveProblemOverride,
+  saveProblemOverride,
+  synchronize,
+} from "./sync.js";
 import { GitHubClient } from "./github.js";
 import { nextSeoulMidnight, toSeoulDate } from "../shared/date.js";
-import { providerForUrl } from "../shared/catalog.js";
-import type { DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SubmissionQueueItem, SyncProgressEvent } from "../shared/model.js";
+import { providerForUrl, resolveCatalogProblem } from "../shared/catalog.js";
+import { problemContextKey } from "../shared/problem-context.js";
+import type { ActiveProblem, DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SubmissionQueueItem, SyncProgressEvent } from "../shared/model.js";
 
 const SYNC_ALARM = "submission-sync";
 const CLOSE_ALARM = "day-close";
@@ -140,7 +151,7 @@ function readEditorSnapshot(provider: Provider): EditorSnapshot {
   return { code, language };
 }
 
-function readSweaProblemMetadata(): { problemIdHint?: string; pageTitle?: string } {
+function readSweaProblemMetadata(): { problemIdHint?: string; pageTitle?: string; pageUrl?: string } {
   const documents: Document[] = [document];
   try {
     if (window.top?.document && window.top.document !== document) documents.unshift(window.top.document);
@@ -156,8 +167,9 @@ function readSweaProblemMetadata(): { problemIdHint?: string; pageTitle?: string
   for (const pageUrl of urls) {
     const value = pageUrl.searchParams.get("problemId") ?? pageUrl.searchParams.get("problemTitle");
     const match = /^\s*(\d{1,8})(?:\s*\.|\s|$)/.exec(value ?? "");
-    if (match) return { problemIdHint: match[1] };
+    if (match) return { problemIdHint: match[1], pageUrl: pageUrl.href };
   }
+  const contextUrl = urls.find((pageUrl) => pageUrl.searchParams.has("contestProbId") || pageUrl.searchParams.has("problemId")) ?? urls[0];
   const selectors = [
     "h1, h2, h3, h4",
     "[class*='problem'] [class*='title']",
@@ -171,18 +183,97 @@ function readSweaProblemMetadata(): { problemIdHint?: string; pageTitle?: string
       for (const element of pageDocument.querySelectorAll(selector)) {
         for (const line of (element.textContent ?? "").split(/\r?\n/)) {
           const match = /^\s*(\d{3,8})\s*\.\s*\S/.exec(line);
-          if (match) return { problemIdHint: match[1], pageTitle: line.trim() };
+          if (match) return { problemIdHint: match[1], pageTitle: line.trim(), pageUrl: contextUrl.href };
         }
       }
     }
     const bodyMatch = /(?:^|\n)\s*(\d{3,8})\s*\.\s*([^\n]+)/m.exec(pageDocument.body?.innerText ?? "");
-    if (bodyMatch) return { problemIdHint: bodyMatch[1], pageTitle: `${bodyMatch[1]}. ${bodyMatch[2].trim()}` };
+    if (bodyMatch) return { problemIdHint: bodyMatch[1], pageTitle: `${bodyMatch[1]}. ${bodyMatch[2].trim()}`, pageUrl: contextUrl.href };
   }
-  return {};
+  return { pageUrl: contextUrl.href };
+}
+
+async function getActiveProblem(auth: { token: string } | undefined): Promise<ActiveProblem | undefined> {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!Number.isInteger(tab?.id) || typeof tab.url !== "string") return undefined;
+  const provider = providerForUrl(tab.url);
+  if (!provider) return undefined;
+
+  let detectedProblemId: string | undefined;
+  let detectedProblemTitle: string | undefined;
+  let contextKey = problemContextKey(provider, tab.url);
+  const contextKeys = new Set<string>();
+  if (contextKey) contextKeys.add(contextKey);
+  if (provider === "swea") {
+    try {
+      const execution = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        func: readSweaProblemMetadata,
+      });
+      const candidates = execution.map((entry: any) => entry.result)
+        .filter((result: any) => result && typeof result === "object") as Array<{
+          problemIdHint?: string;
+          pageTitle?: string;
+          pageUrl?: string;
+        }>;
+      for (const candidate of candidates) {
+        if (typeof candidate.pageUrl !== "string") continue;
+        const titleKey = problemContextKey(provider, candidate.pageUrl, candidate.pageTitle);
+        const urlKey = problemContextKey(provider, candidate.pageUrl);
+        if (titleKey) contextKeys.add(titleKey);
+        if (urlKey) contextKeys.add(urlKey);
+      }
+      const metadata = candidates.find((candidate) => (
+        typeof candidate.pageUrl === "string"
+        && Boolean(problemContextKey(provider, candidate.pageUrl, candidate.pageTitle))
+        && typeof candidate.problemIdHint === "string"
+      )) ?? candidates.find((candidate) => typeof candidate.problemIdHint === "string");
+      detectedProblemId = metadata?.problemIdHint;
+      detectedProblemTitle = metadata?.pageTitle;
+      if (metadata?.pageUrl) {
+        contextKey = problemContextKey(provider, metadata.pageUrl, metadata.pageTitle) ?? contextKey;
+        if (contextKey) contextKeys.add(contextKey);
+      }
+    } catch {
+      // The popup can still show URL-derived metadata when the page cannot be inspected.
+    }
+  }
+  if (!contextKey) return undefined;
+
+  const overrides = await getProblemOverrides();
+  const problemOverride = [...contextKeys].map((key) => overrides[key]).find(Boolean);
+  if (problemOverride) {
+    detectedProblemId ??= problemOverride.detectedProblemId;
+    detectedProblemTitle ??= problemOverride.detectedProblemTitle;
+  }
+  if (!problemOverride && auth) {
+    try {
+      const catalog = await loadCatalog(new GitHubClient(auth.token));
+      const resolved = resolveCatalogProblem(catalog, provider, tab.url, detectedProblemId);
+      if (resolved) {
+        detectedProblemId = resolved.problem.problemId;
+        detectedProblemTitle = resolved.problem.title;
+      }
+    } catch {
+      // Keep the raw detection available if GitHub cannot be reached.
+    }
+  }
+  return {
+    tabId: tab.id,
+    pageUrl: tab.url,
+    contextKey,
+    contextAliases: [...contextKeys].filter((key) => key !== contextKey),
+    detected: {
+      provider,
+      problemId: detectedProblemId,
+      problemTitle: detectedProblemTitle,
+    },
+    problemOverride,
+  };
 }
 
 async function refreshProblemMetadata(item: SubmissionQueueItem): Promise<void> {
-  if (item.provider !== "swea" || !Number.isInteger(item.tabId)) return;
+  if (item.problemOverride || item.provider !== "swea" || !Number.isInteger(item.tabId)) return;
   const hasCapturedFrame = Number.isInteger(item.frameId);
   const preferredFrame = hasCapturedFrame ? item.frameId! : 0;
   let metadata: { problemIdHint?: string; pageTitle?: string } | undefined;
@@ -219,6 +310,7 @@ async function captureAttempt(message: any, sender: any): Promise<any> {
   const tabId = sender.tab?.id;
   const frameId = Number.isInteger(sender.frameId) ? sender.frameId : 0;
   const senderUrl = sender.tab?.url ?? sender.url;
+  const frameUrl = typeof sender.url === "string" ? sender.url : senderUrl;
   const provider = providerForUrl(senderUrl);
   if (!Number.isInteger(tabId) || !provider || provider !== message.provider) {
     throw new Error("지원하지 않는 탭에서 제출 캡처를 요청했습니다.");
@@ -231,12 +323,18 @@ async function captureAttempt(message: any, sender: any): Promise<any> {
   });
   const snapshot = execution?.[0]?.result as EditorSnapshot | undefined;
   if (!snapshot?.code?.trim()) throw new Error("코드 편집기에서 제출 코드를 읽지 못했습니다.");
+  const pageTitle = String(message.pageTitle ?? "");
+  const contextKey = problemContextKey(provider, frameUrl, pageTitle)
+    ?? problemContextKey(provider, senderUrl, pageTitle);
+  const overrides = await getProblemOverrides();
   const id = crypto.randomUUID();
   const attempt: PendingAttempt = {
     id,
     provider,
     problemIdHint: typeof message.problemIdHint === "string" ? message.problemIdHint : undefined,
-    pageTitle: String(message.pageTitle ?? ""),
+    problemContextKey: contextKey,
+    problemOverride: contextKey ? overrides[contextKey] : undefined,
+    pageTitle,
     pageUrl: senderUrl,
     tabId,
     frameId,
@@ -295,6 +393,7 @@ async function publicState(): Promise<any> {
       // Keep the cached record available when GitHub cannot be reached.
     }
   }
+  const activeProblem = auth ? await getActiveProblem(auth) : undefined;
   const recentSubmissions = [...history, ...queue.map(({ code: _code, ...item }) => item)]
     .sort((left, right) => left.acceptedAt.localeCompare(right.acceptedAt))
     .slice(-20);
@@ -302,6 +401,7 @@ async function publicState(): Promise<any> {
     auth: auth ? { login: auth.login, avatarUrl: auth.avatarUrl } : undefined,
     deviceSession,
     queue: recentSubmissions,
+    activeProblem,
     today,
     todayPull,
     settings,
@@ -346,7 +446,7 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       const queue = await getPendingQueue();
       for (const item of queue) {
         if (item.status === "blocked" || item.status === "pending") {
-          if (item.provider === "swea" && item.error?.includes("카탈로그")) {
+          if (!item.problemOverride && item.provider === "swea" && item.error?.includes("카탈로그")) {
             await refreshProblemMetadata(item);
           }
           item.status = "pending";
@@ -374,6 +474,38 @@ async function handleMessage(message: any, sender: any): Promise<any> {
     case "queue:problem-override:clear": {
       if (typeof message.itemId !== "string") throw new Error("수정할 제출 정보가 올바르지 않습니다.");
       await clearProblemOverride(message.itemId);
+      await runSynchronization();
+      return publicState();
+    }
+    case "active-problem:override": {
+      const auth = await getAuth();
+      if (!auth) throw new Error("GitHub 로그인이 필요합니다.");
+      if (!["leetcode", "programmers", "swea"].includes(message.provider)) {
+        throw new Error("지원하지 않는 공급자입니다.");
+      }
+      if (typeof message.problemId !== "string" || typeof message.contextKey !== "string") {
+        throw new Error("현재 문제 정보가 올바르지 않습니다.");
+      }
+      const activeProblem = await getActiveProblem(auth);
+      if (!activeProblem || activeProblem.contextKey !== message.contextKey) {
+        throw new Error("현재 열린 문제가 변경되었습니다. 팝업을 다시 열어 확인하세요.");
+      }
+      await saveActiveProblemOverride(
+        auth,
+        activeProblem,
+        message.provider as Provider,
+        message.problemId,
+      );
+      await runSynchronization();
+      return publicState();
+    }
+    case "active-problem:override:clear": {
+      if (typeof message.contextKey !== "string") throw new Error("현재 문제 정보가 올바르지 않습니다.");
+      const activeProblem = await getActiveProblem(await getAuth());
+      if (!activeProblem || activeProblem.contextKey !== message.contextKey) {
+        throw new Error("현재 열린 문제가 변경되었습니다. 팝업을 다시 열어 확인하세요.");
+      }
+      await clearActiveProblemOverride([activeProblem.contextKey, ...activeProblem.contextAliases]);
       await runSynchronization();
       return publicState();
     }

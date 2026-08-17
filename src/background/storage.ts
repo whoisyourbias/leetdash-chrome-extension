@@ -1,4 +1,4 @@
-import type { AuthState, DailyPullRequest, DeviceSession, ExtensionSettings, PendingAttempt, ProblemCatalog, SubmissionQueueItem, SyncActivity, SyncHistoryItem } from "../shared/model.js";
+import type { AuthState, DailyPullRequest, DeviceSession, ExtensionSettings, PendingAttempt, ProblemCatalog, ProblemOverride, SubmissionQueueItem, SyncActivity, SyncHistoryItem } from "../shared/model.js";
 
 export const storageKeys = {
   auth: "auth",
@@ -7,6 +7,7 @@ export const storageKeys = {
   deviceSession: "deviceSession",
   pendingAttempts: "pendingAttempts",
   pendingQueue: "pendingQueue",
+  problemOverrides: "problemOverrides",
   pullSnapshots: "pullSnapshots",
   settings: "settings",
   syncHistory: "syncHistory",
@@ -46,6 +47,7 @@ export const getBranchClaims = () => getStored<Record<string, string>>(storageKe
 export const getCatalogCache = () => getStored<CatalogCache | undefined>(storageKeys.catalog, undefined);
 export const getDeviceSession = () => getStored<DeviceSession | undefined>(storageKeys.deviceSession, undefined);
 export const getPendingAttempts = () => getStored<Record<string, PendingAttempt>>(storageKeys.pendingAttempts, {});
+export const getProblemOverrides = () => getStored<Record<string, ProblemOverride>>(storageKeys.problemOverrides, {});
 export async function getSettings(): Promise<ExtensionSettings> {
   const settings = await getStored<Partial<ExtensionSettings> | undefined>(storageKeys.settings, undefined);
   return {

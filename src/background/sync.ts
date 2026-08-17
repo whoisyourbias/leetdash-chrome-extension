@@ -4,9 +4,11 @@ import { toSeoulDate } from "../shared/date.js";
 import { languageExtension } from "../shared/languages.js";
 import type {
   AuthState,
+  ActiveProblem,
   DailyPullRequest,
   PendingAttempt,
   ProblemCatalog,
+  ProblemOverride,
   Provider,
   SubmissionQueueItem,
   SyncProgressEvent,
@@ -19,6 +21,7 @@ import {
   getBranchClaims,
   getPendingQueue,
   getPullSnapshots,
+  getProblemOverrides,
   getSettings,
   getSyncHistory,
   removeStored,
@@ -43,6 +46,15 @@ export async function enqueueAccepted(
     && item.codeHash === codeHash
   ));
   if (duplicate) {
+    const manualMapping = duplicate.problemOverride ? {
+      provider: duplicate.provider,
+      problemIdHint: duplicate.problemIdHint,
+      problemContextKey: duplicate.problemContextKey,
+      pageTitle: duplicate.pageTitle,
+      problemId: duplicate.problemId,
+      problemTitle: duplicate.problemTitle,
+      problemOverride: duplicate.problemOverride,
+    } : undefined;
     Object.assign(duplicate, attempt, {
       id: duplicate.id,
       status: "pending",
@@ -50,6 +62,7 @@ export async function enqueueAccepted(
       blockReason: undefined,
       retryAt: undefined,
     });
+    if (manualMapping) Object.assign(duplicate, manualMapping);
     await setStored(storageKeys.pendingQueue, queue);
     return duplicate;
   }
@@ -67,7 +80,7 @@ export async function enqueueAccepted(
   return item;
 }
 
-async function loadCatalog(client: GitHubClient): Promise<ProblemCatalog> {
+export async function loadCatalog(client: GitHubClient): Promise<ProblemCatalog> {
   const cached = await getCatalogCache();
   if (
     cached?.schemaVersion === 1
@@ -82,6 +95,34 @@ async function loadCatalog(client: GitHubClient): Promise<ProblemCatalog> {
   return catalog;
 }
 
+export function createProblemOverride(
+  catalog: ProblemCatalog,
+  detected: { provider: Provider; pageUrl: string; problemIdHint?: string; problemTitleHint?: string },
+  provider: Provider,
+  problemId: string,
+  updatedAt = new Date().toISOString(),
+): ProblemOverride {
+  const normalizedProblemId = problemId.trim();
+  if (!/^\d{1,8}$/.test(normalizedProblemId)) throw new Error("문제 번호는 1~8자리 숫자로 입력하세요.");
+  const resolved = resolveCatalogProblem(
+    catalog,
+    detected.provider,
+    detected.pageUrl,
+    detected.problemIdHint,
+    { provider, problemId: normalizedProblemId },
+  );
+  if (!resolved) throw new Error(`${provider} ${normalizedProblemId} 문제를 leetdash 카탈로그에서 찾지 못했습니다.`);
+  return {
+    provider,
+    problemId: resolved.problem.problemId,
+    problemTitle: resolved.problem.title,
+    updatedAt,
+    detectedProvider: detected.provider,
+    detectedProblemId: detected.problemIdHint,
+    detectedProblemTitle: detected.problemTitleHint,
+  };
+}
+
 export function applyProblemOverride(
   item: SubmissionQueueItem,
   catalog: ProblemCatalog,
@@ -90,27 +131,19 @@ export function applyProblemOverride(
   updatedAt = new Date().toISOString(),
 ): SubmissionQueueItem {
   if (item.status === "syncing") throw new Error("업로드 중인 제출은 문제 정보를 수정할 수 없습니다.");
-  const normalizedProblemId = problemId.trim();
-  if (!/^\d{1,8}$/.test(normalizedProblemId)) throw new Error("문제 번호는 1~8자리 숫자로 입력하세요.");
-  const resolved = resolveCatalogProblem(
+  const problemOverride = createProblemOverride(
     catalog,
-    item.provider,
-    item.pageUrl,
-    item.problemIdHint,
-    { provider, problemId: normalizedProblemId },
+    { provider: item.provider, pageUrl: item.pageUrl, problemIdHint: item.problemIdHint, problemTitleHint: item.pageTitle },
+    provider,
+    problemId,
+    updatedAt,
   );
-  if (!resolved) throw new Error(`${provider} ${normalizedProblemId} 문제를 leetdash 카탈로그에서 찾지 못했습니다.`);
   return {
     ...item,
     status: "pending",
-    problemId: resolved.problem.problemId,
-    problemTitle: resolved.problem.title,
-    problemOverride: {
-      provider,
-      problemId: resolved.problem.problemId,
-      problemTitle: resolved.problem.title,
-      updatedAt,
-    },
+    problemId: problemOverride.problemId,
+    problemTitle: problemOverride.problemTitle,
+    problemOverride,
     error: undefined,
     blockReason: undefined,
     retryAt: undefined,
@@ -134,7 +167,13 @@ export async function saveProblemOverride(
   if (index < 0) throw new Error("문제 정보를 확인하는 동안 제출 동기화가 완료되었습니다.");
   const updated = applyProblemOverride(queue[index], catalog, provider, problemId);
   queue[index] = updated;
-  await setStored(storageKeys.pendingQueue, queue);
+  const writes: Promise<void>[] = [setStored(storageKeys.pendingQueue, queue)];
+  if (updated.problemContextKey && updated.problemOverride) {
+    const overrides = await getProblemOverrides();
+    overrides[updated.problemContextKey] = updated.problemOverride;
+    writes.push(setStored(storageKeys.problemOverrides, overrides));
+  }
+  await Promise.all(writes);
   return updated;
 }
 
@@ -143,6 +182,34 @@ export async function clearProblemOverride(itemId: string): Promise<SubmissionQu
   const index = queue.findIndex((item) => item.id === itemId);
   if (index < 0) throw new Error("수정할 미동기화 제출을 찾지 못했습니다.");
   if (queue[index].status === "syncing") throw new Error("업로드 중인 제출은 문제 정보를 수정할 수 없습니다.");
+  const contextKey = queue[index].problemContextKey;
+  const selectedOverride = queue[index].problemOverride;
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    if (queue[queueIndex].status === "syncing") continue;
+    const sameOverride = selectedOverride
+      && queue[queueIndex].problemOverride?.updatedAt === selectedOverride.updatedAt
+      && queue[queueIndex].problemOverride?.provider === selectedOverride.provider
+      && queue[queueIndex].problemOverride?.problemId === selectedOverride.problemId;
+    if (queueIndex !== index && queue[queueIndex].problemContextKey !== contextKey && !sameOverride) continue;
+    queue[queueIndex] = withoutProblemOverride(queue[queueIndex]);
+  }
+  const writes: Promise<void>[] = [setStored(storageKeys.pendingQueue, queue)];
+  if (contextKey) {
+    const overrides = await getProblemOverrides();
+    for (const [key, problemOverride] of Object.entries(overrides)) {
+      const sameOverride = selectedOverride
+        && problemOverride.updatedAt === selectedOverride.updatedAt
+        && problemOverride.provider === selectedOverride.provider
+        && problemOverride.problemId === selectedOverride.problemId;
+      if (key === contextKey || sameOverride) delete overrides[key];
+    }
+    writes.push(setStored(storageKeys.problemOverrides, overrides));
+  }
+  await Promise.all(writes);
+  return queue[index];
+}
+
+function withoutProblemOverride(item: SubmissionQueueItem): SubmissionQueueItem {
   const {
     problemOverride: _problemOverride,
     problemId: _problemId,
@@ -151,11 +218,100 @@ export async function clearProblemOverride(itemId: string): Promise<SubmissionQu
     blockReason: _blockReason,
     retryAt: _retryAt,
     ...detected
-  } = queue[index];
-  const updated: SubmissionQueueItem = { ...detected, status: "pending" };
-  queue[index] = updated;
-  await setStored(storageKeys.pendingQueue, queue);
-  return updated;
+  } = item;
+  return { ...detected, status: "pending" };
+}
+
+export async function saveActiveProblemOverride(
+  auth: AuthState,
+  activeProblem: ActiveProblem,
+  provider: Provider,
+  problemId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ProblemOverride> {
+  const catalog = await loadCatalog(new GitHubClient(auth.token, fetchImpl));
+  const problemOverride = createProblemOverride(
+    catalog,
+    {
+      provider: activeProblem.detected.provider,
+      pageUrl: activeProblem.pageUrl,
+      problemIdHint: activeProblem.detected.problemId,
+      problemTitleHint: activeProblem.detected.problemTitle,
+    },
+    provider,
+    problemId,
+  );
+  const [overrides, queue] = await Promise.all([getProblemOverrides(), getPendingQueue()]);
+  for (const contextKey of [activeProblem.contextKey, ...activeProblem.contextAliases]) {
+    overrides[contextKey] = problemOverride;
+  }
+  const queueChanged = applyActiveProblemOverrideToQueue(queue, activeProblem, catalog, problemOverride);
+  await Promise.all([
+    setStored(storageKeys.problemOverrides, overrides),
+    queueChanged ? setStored(storageKeys.pendingQueue, queue) : Promise.resolve(),
+  ]);
+  return problemOverride;
+}
+
+export function applyActiveProblemOverrideToQueue(
+  queue: SubmissionQueueItem[],
+  activeProblem: ActiveProblem,
+  catalog: ProblemCatalog,
+  problemOverride: ProblemOverride,
+): boolean {
+  let queueChanged = false;
+  const contextKeys = new Set([activeProblem.contextKey, ...activeProblem.contextAliases]);
+  for (let index = 0; index < queue.length; index += 1) {
+    const item = queue[index];
+    const legacyMatch = !item.problemContextKey
+      && item.tabId === activeProblem.tabId
+      && item.provider === activeProblem.detected.provider
+      && item.pageUrl === activeProblem.pageUrl;
+    if (
+      ((item.problemContextKey && contextKeys.has(item.problemContextKey)) || legacyMatch)
+      && (item.status === "pending" || item.status === "blocked")
+    ) {
+      queue[index] = {
+        ...applyProblemOverride(
+          item,
+          catalog,
+          problemOverride.provider,
+          problemOverride.problemId,
+          problemOverride.updatedAt,
+        ),
+        problemContextKey: activeProblem.contextKey,
+        problemOverride,
+      };
+      queueChanged = true;
+    }
+  }
+  return queueChanged;
+}
+
+export async function clearActiveProblemOverride(contextKeys: string | string[]): Promise<void> {
+  const keys = new Set(Array.isArray(contextKeys) ? contextKeys : [contextKeys]);
+  const [overrides, queue] = await Promise.all([getProblemOverrides(), getPendingQueue()]);
+  const selectedOverrides = [...keys].map((key) => overrides[key]).filter(Boolean);
+  const isSelectedOverride = (problemOverride: ProblemOverride | undefined) => Boolean(problemOverride && selectedOverrides.some((selected) => (
+    selected.updatedAt === problemOverride.updatedAt
+    && selected.provider === problemOverride.provider
+    && selected.problemId === problemOverride.problemId
+  )));
+  for (const [contextKey, problemOverride] of Object.entries(overrides)) {
+    if (keys.has(contextKey) || isSelectedOverride(problemOverride)) delete overrides[contextKey];
+  }
+  let queueChanged = false;
+  for (let index = 0; index < queue.length; index += 1) {
+    const item = queue[index];
+    if (item.status === "syncing") continue;
+    if ((!item.problemContextKey || !keys.has(item.problemContextKey)) && !isSelectedOverride(item.problemOverride)) continue;
+    queue[index] = withoutProblemOverride(item);
+    queueChanged = true;
+  }
+  await Promise.all([
+    setStored(storageKeys.problemOverrides, overrides),
+    queueChanged ? setStored(storageKeys.pendingQueue, queue) : Promise.resolve(),
+  ]);
 }
 
 function retryDelay(attempts: number, error: unknown): number {

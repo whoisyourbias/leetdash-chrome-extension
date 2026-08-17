@@ -23,6 +23,23 @@ interface PopupState {
     error?: string;
     prUrl?: string;
   }>;
+  activeProblem?: {
+    tabId: number;
+    pageUrl: string;
+    contextKey: string;
+    contextAliases: string[];
+    detected: {
+      provider: "leetcode" | "programmers" | "swea";
+      problemId?: string;
+      problemTitle?: string;
+    };
+    problemOverride?: {
+      provider: "leetcode" | "programmers" | "swea";
+      problemId: string;
+      problemTitle: string;
+      updatedAt: string;
+    };
+  };
   today: string;
   todayPull?: { url: string; state: "draft" | "ready" | "closed" | "merged" };
   settings: {
@@ -150,6 +167,111 @@ function renderSyncActivity(state: PopupState, root: HTMLElement): void {
     steps.append(row);
   });
   card.append(header, message, steps);
+  root.append(card);
+}
+
+function renderActiveProblem(state: PopupState, root: HTMLElement): void {
+  const card = element("section", "active-problem-card");
+  const heading = element("div", "active-problem-heading");
+  const eyebrow = element("span", "sync-eyebrow");
+  eyebrow.textContent = "현재 열린 문제";
+  heading.append(eyebrow);
+  const activeProblem = state.activeProblem;
+  if (!activeProblem) {
+    const empty = element("p", "muted active-problem-empty");
+    empty.textContent = "지원되는 LeetCode, Programmers, SWEA 문제 페이지를 열어주세요.";
+    card.append(heading, empty);
+    root.append(card);
+    return;
+  }
+
+  const appliedProvider = activeProblem.problemOverride?.provider ?? activeProblem.detected.provider;
+  const appliedProblemId = activeProblem.problemOverride?.problemId ?? activeProblem.detected.problemId;
+  const title = element("strong", "active-problem-title");
+  title.textContent = activeProblem.problemOverride?.problemTitle
+    ?? activeProblem.detected.problemTitle
+    ?? `${providerLabels[appliedProvider]} ${appliedProblemId ?? "문제"}`;
+  heading.append(title);
+
+  const metadata = element("dl", "problem-metadata");
+  const providerLabel = element("dt");
+  providerLabel.textContent = "감지 공급자";
+  const providerValue = element("dd");
+  providerValue.textContent = providerLabels[activeProblem.detected.provider];
+  const idLabel = element("dt");
+  idLabel.textContent = "감지 문제 번호";
+  const idValue = element("dd");
+  idValue.textContent = activeProblem.detected.problemId ?? "확인 못함";
+  metadata.append(providerLabel, providerValue, idLabel, idValue);
+  if (activeProblem.problemOverride) {
+    const appliedLabel = element("dt");
+    appliedLabel.textContent = "적용 문제";
+    const appliedValue = element("dd", "manual-value");
+    appliedValue.textContent = `${providerLabels[activeProblem.problemOverride.provider]} ${activeProblem.problemOverride.problemId} · 사용자 지정`;
+    metadata.append(appliedLabel, appliedValue);
+  }
+
+  const editButton = button("현재 문제 수정", () => {
+    editor.hidden = !editor.hidden;
+    editButton.textContent = editor.hidden ? "현재 문제 수정" : "수정 닫기";
+  }, "inline-button");
+  const editor = element("div", "problem-editor");
+  editor.hidden = true;
+  const providerField = element("label");
+  providerField.textContent = "공급자";
+  const providerSelect = element("select");
+  for (const provider of ["leetcode", "programmers", "swea"] as const) {
+    const option = element("option");
+    option.value = provider;
+    option.textContent = providerLabels[provider];
+    providerSelect.append(option);
+  }
+  providerSelect.value = appliedProvider;
+  providerField.append(providerSelect);
+  const idField = element("label");
+  idField.textContent = "문제 번호";
+  const idInput = element("input");
+  idInput.type = "text";
+  idInput.inputMode = "numeric";
+  idInput.pattern = "[0-9]{1,8}";
+  idInput.maxLength = 8;
+  idInput.value = appliedProblemId ?? "";
+  idField.append(idInput);
+  const feedback = element("p", "editor-feedback");
+  const actions = element("div", "editor-actions");
+  const save = button("저장", async () => {
+    const problemId = idInput.value.trim();
+    if (!/^\d{1,8}$/.test(problemId)) {
+      feedback.textContent = "문제 번호는 1~8자리 숫자로 입력하세요.";
+      return;
+    }
+    save.disabled = true;
+    feedback.textContent = "카탈로그를 확인하는 중입니다.";
+    const result = await send("active-problem:override", {
+      contextKey: activeProblem.contextKey,
+      provider: providerSelect.value,
+      problemId,
+    });
+    if (result?.ok === false) {
+      save.disabled = false;
+      feedback.textContent = result.error;
+      return;
+    }
+    render(result);
+  }, "inline-button primary");
+  actions.append(save);
+  if (activeProblem.problemOverride) {
+    actions.append(button("자동 감지로 되돌리기", async () => {
+      const result = await send("active-problem:override:clear", { contextKey: activeProblem.contextKey });
+      if (result?.ok === false) {
+        feedback.textContent = result.error;
+        return;
+      }
+      render(result);
+    }, "inline-button subtle"));
+  }
+  editor.append(providerField, idField, feedback, actions);
+  card.append(heading, metadata, editButton, editor);
   root.append(card);
 }
 
@@ -356,6 +478,8 @@ function render(state: PopupState): void {
 
   renderSettings(state, app);
 
+  renderActiveProblem(state, app);
+
   renderSyncActivity(state, app);
 
   if (state.todayPull) {
@@ -385,7 +509,7 @@ void send("state:get").then(render);
 
 chrome.storage.onChanged.addListener((changes: Record<string, unknown>, areaName: string) => {
   if (areaName !== "local" || refreshScheduled) return;
-  if (!["pendingQueue", "syncHistory", "pullSnapshots", "settings", "syncActivity", "auth"].some((key) => key in changes)) return;
+  if (!["pendingQueue", "problemOverrides", "syncHistory", "pullSnapshots", "settings", "syncActivity", "auth"].some((key) => key in changes)) return;
   refreshScheduled = true;
   window.setTimeout(() => {
     refreshScheduled = false;
