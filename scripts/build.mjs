@@ -8,7 +8,8 @@ const output = path.join(extensionRoot, "dist");
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
-execFileSync("tsc", ["-p", "tsconfig.json"], {
+const tsc = path.join(extensionRoot, "node_modules", "typescript", "bin", "tsc");
+execFileSync(process.execPath, [tsc, "-p", "tsconfig.json"], {
   cwd: extensionRoot,
   stdio: "inherit",
 });
