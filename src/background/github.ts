@@ -236,20 +236,10 @@ export class GitHubClient {
         await onProgress?.("동일한 풀이가 이미 브랜치에 반영되어 있습니다.");
         return { changed: false, sha: parentSha };
       }
-      // Remove every old solution file from the directory and add the newly
-      // submitted file. Keeping the target path out of the delete entries is
-      // important: GitHub's tree API then replaces an existing solution file
-      // at exactly the same path instead of leaving a stale copy behind.
       const entries = existingSolutions
-        .map((entry) => ({
-          path: entry.path,
-          mode: "100644",
-          type: "blob",
-          sha: entry.path === solutionPath ? blob.sha : null,
-        }));
-      if (!existingSolutions.some((entry) => entry.path === solutionPath)) {
-        entries.push({ path: solutionPath, mode: "100644", type: "blob", sha: blob.sha });
-      }
+        .filter((entry) => entry.path !== solutionPath)
+        .map((entry) => ({ path: entry.path, mode: "100644", type: "blob", sha: null }));
+      entries.push({ path: solutionPath, mode: "100644", type: "blob", sha: blob.sha });
       await onProgress?.("풀이 파일 변경 트리를 생성하는 중입니다.");
       const nextTree = await this.request<any>("POST", `/repos/${fork}/git/trees`, {
         body: { base_tree: commit.tree.sha, tree: entries },
