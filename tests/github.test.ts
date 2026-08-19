@@ -118,6 +118,40 @@ describe("GitHub daily submission orchestration", () => {
     ]);
   });
 
+  it("overwrites the existing solution when the resubmission uses the same language", async () => {
+    const requests: Array<{ url: URL; init: RequestInit; body: any }> = [];
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      requests.push({ url, init, body });
+      if (url.pathname.endsWith("/git/ref/heads/260817")) return response({ object: { sha: "parent" } });
+      if (url.pathname.endsWith("/git/commits/parent")) return response({ tree: { sha: "base-tree" } });
+      if (url.pathname.endsWith("/git/trees/base-tree")) return response({
+        tree: [{ type: "blob", path: "submissions/ada/leetcode/1/Solution.java", sha: "old" }],
+      });
+      if (url.pathname.endsWith("/git/blobs")) return response({ sha: "new-blob" }, 201);
+      if (url.pathname.endsWith("/git/trees")) return response({ sha: "new-tree" }, 201);
+      if (url.pathname.endsWith("/git/commits")) return response({ sha: "new-commit" }, 201);
+      if (url.pathname.endsWith("/git/refs/heads/260817")) return response({ object: { sha: "new-commit" } });
+      throw new Error(`Unexpected request: ${init.method} ${url.pathname}`);
+    });
+    const client = new GitHubClient("token", fetchImpl as typeof fetch);
+
+    await expect(client.commitSolution({
+      fork: "ada/leetdash",
+      branch: "260817",
+      directory: "submissions/ada/leetcode/1",
+      extension: "java",
+      code: "class Solution { int answer() { return 2; } }",
+      message: "solve: leetcode 1",
+    })).resolves.toEqual({ changed: true, sha: "new-commit" });
+
+    const treeRequest = requests.find(({ url, init }) => url.pathname.endsWith("/git/trees") && init.method === "POST");
+    expect(treeRequest?.body.tree).toEqual([
+      { path: "submissions/ada/leetcode/1/Solution.java", mode: "100644", type: "blob", sha: "new-blob" },
+    ]);
+  });
+
   it("replaces another language solution in one atomic tree commit", async () => {
     const requests: Array<{ url: URL; init: RequestInit; body: any }> = [];
     const fetchImpl = vi.fn(async (input: URL | RequestInfo, init: RequestInit = {}) => {
