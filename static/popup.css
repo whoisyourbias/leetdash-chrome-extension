@@ -14,6 +14,14 @@ header { margin-bottom: 18px; }
 .link-button { margin-top: 16px; background: transparent; color: #64748b; padding: 4px; font-size: 12px; }
 .device-card, .pull-card, .queue-item, .account, .sync-card, .settings-card, .registration-card, .active-problem-card { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; }
 .device-card { text-align: center; }
+.login-status { display: flex; align-items: center; gap: 11px; margin-bottom: 12px; border-radius: 8px; background: #eff6ff; padding: 10px; color: #1e3a8a; text-align: left; }
+.login-status-copy { display: grid; gap: 2px; line-height: 1.35; }
+.login-status-copy strong { font-size: 12px; }
+.login-status-copy .muted { color: #475569; font-size: 11px; }
+.login-spinner { flex: none; width: 20px; height: 20px; border: 3px solid #bfdbfe; border-top-color: #2563eb; border-radius: 50%; animation: login-spin .8s linear infinite; }
+.button-spinner { width: 15px; height: 15px; margin-right: 8px; border-width: 2px; border-color: rgba(255, 255, 255, .4); border-top-color: white; }
+.device-error { margin: 0 0 12px; border-radius: 8px; background: #fee2e2; padding: 9px; color: #991b1b; font-size: 12px; line-height: 1.45; }
+.device-instruction { margin: 0; }
 .device-code { display: block; margin: 10px 0 14px; font-size: 25px; font-weight: 800; letter-spacing: .12em; }
 .account img { width: 34px; height: 34px; border-radius: 50%; }
 .settings-card { margin-top: 10px; }
@@ -85,3 +93,7 @@ a { color: #2563eb; font-size: 12px; font-weight: 700; }
 .sync-step.failed .sync-step-marker { border-color: #dc2626; background: #fee2e2; }
 .button:disabled { cursor: wait; opacity: .65; }
 @keyframes sync-pulse { 50% { box-shadow: 0 0 0 4px rgba(37, 99, 235, .12); } }
+@keyframes login-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .login-spinner, .sync-step.active .sync-step-marker { animation: none; }
+}

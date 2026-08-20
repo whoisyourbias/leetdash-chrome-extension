@@ -12,7 +12,9 @@ function response(body: unknown, status = 200): Response {
 describe("GitHub daily submission orchestration", () => {
   it("uses an upstream namespace branch for the repository owner", async () => {
     expect(submissionBranch("whoisyourbias", "260817")).toBe("submissions/whoisyourbias/260817");
+    expect(submissionBranch("whoisyourbias", "260817", 2)).toBe("submissions/whoisyourbias/260817-2");
     expect(submissionBranch("ada", "260817")).toBe("260817");
+    expect(submissionBranch("ada", "260817", 3)).toBe("260817-3");
 
     const fetchImpl = vi.fn();
     const progress: string[] = [];
@@ -30,6 +32,7 @@ describe("GitHub daily submission orchestration", () => {
     const fetchImpl = vi.fn(function (this: unknown, input: URL | RequestInfo, init: RequestInit = {}) {
       expect(this).toBe(globalThis);
       expect(new URL(String(input)).searchParams.get("ref")).toBe("master");
+      expect(init.cache).toBe("no-store");
       expect((init.headers as Record<string, string>).Accept).toBe("application/vnd.github.raw+json");
       return Promise.resolve(new Response(largeCatalog, { status: 200 }));
     });
@@ -60,8 +63,9 @@ describe("GitHub daily submission orchestration", () => {
   });
 
   it("invokes browser fetch with the global receiver", async () => {
-    const fetchImpl = vi.fn(function (this: unknown) {
+    const fetchImpl = vi.fn(function (this: unknown, _input: URL | RequestInfo, init: RequestInit = {}) {
       expect(this).toBe(globalThis);
+      expect(init.cache).toBe("no-store");
       return Promise.resolve(response({ login: "ada" }));
     });
     const client = new GitHubClient("token", fetchImpl as typeof fetch);
@@ -158,6 +162,80 @@ describe("GitHub daily submission orchestration", () => {
       .toEqual({ sha: "new-commit", force: false });
   });
 
+  it("creates a follow-up branch from the previous merged pull head", async () => {
+    const requests: Array<{ url: URL; init: RequestInit; body: any }> = [];
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      requests.push({ url, init, body });
+      if (url.pathname === "/repos/ada/leetdash/git/ref/heads/260817-2") {
+        return response({ message: "Not Found" }, 404);
+      }
+      if (url.pathname === "/repos/ada/leetdash/git/refs") return response({}, 201);
+      throw new Error(`Unexpected request: ${init.method} ${url.pathname}`);
+    });
+    const client = new GitHubClient("token", fetchImpl as typeof fetch);
+
+    await expect(client.ensureBranch("ada/leetdash", "260817-2", undefined, "merged-head"))
+      .resolves.toEqual({ created: true, atBase: true });
+    expect(requests.map(({ url }) => url.pathname)).not.toContain(
+      "/repos/ada/leetdash/git/ref/heads/master",
+    );
+    expect(requests.find(({ url }) => url.pathname.endsWith("/git/refs"))?.body).toEqual({
+      ref: "refs/heads/260817-2",
+      sha: "merged-head",
+    });
+  });
+
+  it("rebases on a fresh branch head after a non-fast-forward conflict", async () => {
+    let refReads = 0;
+    let refUpdates = 0;
+    const createdCommits: any[] = [];
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      if (url.pathname.endsWith("/git/ref/heads/260820")) {
+        refReads += 1;
+        expect(init.cache).toBe("no-store");
+        return response({ object: { sha: refReads === 1 ? "stale-parent" : "fresh-parent" } });
+      }
+      if (url.pathname.endsWith("/git/commits/stale-parent")) return response({ tree: { sha: "stale-tree" } });
+      if (url.pathname.endsWith("/git/commits/fresh-parent")) return response({ tree: { sha: "fresh-tree" } });
+      if (init.method === "GET" && url.pathname.includes("/git/trees/")) return response({ tree: [] });
+      if (init.method === "POST" && url.pathname.endsWith("/git/blobs")) return response({ sha: "solution-blob" }, 201);
+      if (init.method === "POST" && url.pathname.endsWith("/git/trees")) {
+        return response({ sha: refReads === 1 ? "stale-next-tree" : "fresh-next-tree" }, 201);
+      }
+      if (init.method === "POST" && url.pathname.endsWith("/git/commits")) {
+        createdCommits.push(body);
+        return response({ sha: refReads === 1 ? "stale-commit" : "fresh-commit" }, 201);
+      }
+      if (init.method === "PATCH" && url.pathname.endsWith("/git/refs/heads/260820")) {
+        refUpdates += 1;
+        return refUpdates === 1
+          ? response({ message: "Update is not a fast forward" }, 422)
+          : response({ object: { sha: "fresh-commit" } });
+      }
+      throw new Error(`Unexpected request: ${init.method} ${url.pathname}`);
+    });
+    const client = new GitHubClient("token", fetchImpl as typeof fetch);
+
+    await expect(client.commitSolution({
+      fork: "whoisyourbias/leetdash",
+      branch: "260820",
+      directory: "submissions/whoisyourbias/programmers/43236",
+      extension: "js",
+      code: "function solution() {}",
+      message: "solve: programmers 43236",
+    })).resolves.toEqual({ changed: true, sha: "fresh-commit" });
+
+    expect(refReads).toBe(2);
+    expect(createdCommits.map((commit) => commit.parents)).toEqual([
+      ["stale-parent"],
+      ["fresh-parent"],
+    ]);
+  });
+
   it("reuses the exact open Draft PR", async () => {
     const pull = {
       number: 17,
@@ -205,6 +283,8 @@ describe("GitHub daily submission orchestration", () => {
       .resolves.toMatchObject({ number: 17, state: "ready" });
     await expect(client.findManagedDraftPull("ada", "260817", "2026-08-17"))
       .rejects.toThrow("Ready 상태");
+    await expect(client.resolveDailyPullTarget("ada", "260817", "2026-08-17"))
+      .resolves.toMatchObject({ branch: "260817", sequence: 1, pull: { state: "ready" } });
   });
 
   it("distinguishes closed and merged pull requests from a missing pull", async () => {
@@ -224,10 +304,104 @@ describe("GitHub daily submission orchestration", () => {
       .resolves.toMatchObject({ state: "closed" });
     await expect(closed.findManagedDraftPull("ada", "260817", "2026-08-17"))
       .rejects.toMatchObject({ blockReason: "pull_closed" });
+    await expect(closed.resolveDailyPullTarget("ada", "260817", "2026-08-17"))
+      .resolves.toMatchObject({ branch: "260817", sequence: 1, pull: { state: "closed" } });
     await expect(merged.findManagedPull("ada", "260817", "2026-08-17"))
       .resolves.toMatchObject({ state: "merged" });
     await expect(merged.findManagedDraftPull("ada", "260817", "2026-08-17"))
       .rejects.toMatchObject({ blockReason: "pull_merged" });
+  });
+
+  it("selects the first branch after consecutive merged daily pulls", async () => {
+    const pullsByBranch: Record<string, any[]> = {
+      "260817": [{
+        number: 17,
+        node_id: "PR_17",
+        html_url: "https://github.com/whoisyourbias/leetdash/pull/17",
+        merged_at: "2026-08-17T10:00:00Z",
+        body: "<!-- leetdash-extension:date=2026-08-17 -->",
+        head: { ref: "260817", sha: "head-17", user: { login: "ada" } },
+      }],
+      "260817-2": [{
+        number: 18,
+        node_id: "PR_18",
+        html_url: "https://github.com/whoisyourbias/leetdash/pull/18",
+        merged_at: "2026-08-17T11:00:00Z",
+        body: "<!-- leetdash-extension:date=2026-08-17 -->",
+        head: { ref: "260817-2", sha: "head-18", user: { login: "ada" } },
+      }],
+      "260817-3": [],
+    };
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo) => {
+      const head = new URL(String(input)).searchParams.get("head")?.split(":").at(-1) ?? "";
+      return response(pullsByBranch[head]);
+    });
+    const client = new GitHubClient("token", fetchImpl as typeof fetch);
+
+    await expect(client.resolveDailyPullTarget("ada", "260817", "2026-08-17"))
+      .resolves.toMatchObject({
+        branch: "260817-3",
+        sequence: 3,
+        baseSha: "head-18",
+        latestPull: { number: 18, branch: "260817-2", state: "merged" },
+      });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops at an existing follow-up Draft instead of advancing again", async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo) => {
+      const head = new URL(String(input)).searchParams.get("head")?.split(":").at(-1);
+      if (head === "260817") return response([{
+        number: 17,
+        node_id: "PR_17",
+        html_url: "https://github.com/whoisyourbias/leetdash/pull/17",
+        merged_at: "2026-08-17T10:00:00Z",
+        body: "<!-- leetdash-extension:date=2026-08-17 -->",
+        head: { ref: "260817", sha: "head-17", user: { login: "ada" } },
+      }]);
+      return response([{
+        number: 18,
+        node_id: "PR_18",
+        html_url: "https://github.com/whoisyourbias/leetdash/pull/18",
+        draft: true,
+        body: "<!-- leetdash-extension:date=2026-08-17 -->",
+        head: { ref: "260817-2", sha: "head-18", user: { login: "ada" } },
+      }]);
+    });
+    const client = new GitHubClient("token", fetchImpl as typeof fetch);
+
+    await expect(client.resolveDailyPullTarget("ada", "260817", "2026-08-17"))
+      .resolves.toMatchObject({
+        branch: "260817-2",
+        sequence: 2,
+        pull: { number: 18, state: "draft" },
+        latestPull: { number: 18, state: "draft" },
+        baseSha: "head-17",
+      });
+  });
+
+  it("uses the follow-up branch name as the new Draft PR title", async () => {
+    const requests: any[] = [];
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      if (init.method === "GET") return response([]);
+      const body = JSON.parse(String(init.body));
+      requests.push(body);
+      return response({
+        number: 18,
+        node_id: "PR_18",
+        html_url: "https://github.com/whoisyourbias/leetdash/pull/18",
+      }, 201);
+    });
+    const client = new GitHubClient("token", fetchImpl as typeof fetch);
+
+    await expect(client.ensureDraftPull("ada", "260817-2", "2026-08-17"))
+      .resolves.toMatchObject({ branch: "260817-2", number: 18, state: "draft" });
+    expect(requests).toContainEqual(expect.objectContaining({
+      head: "ada:260817-2",
+      title: "260817-2",
+      draft: true,
+    }));
   });
 
   it("refuses to reuse an unmarked Draft PR", async () => {

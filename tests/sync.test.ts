@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyActiveProblemOverrideToQueue, applyProblemOverride, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
+import { applyActiveProblemOverrideToQueue, applyProblemOverride, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull, releaseRefConflictQueueItems, releaseUnauthorizedQueueItems } from "../src/background/sync";
+import { GitHubError } from "../src/background/github";
 import type { ActiveProblem, AuthState, DailyPullRequest, PendingAttempt, ProblemCatalog, ProblemOverride, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
 
 const auth: AuthState = { login: "ada", token: "token" };
@@ -27,6 +28,15 @@ const sweaCatalog: ProblemCatalog = {
   }],
 };
 
+function targetFor(pull: DailyPullRequest | undefined) {
+  return {
+    branch: pull?.branch ?? "260817",
+    sequence: 1,
+    pull,
+    latestPull: pull,
+  };
+}
+
 beforeEach(() => {
   const stored: Record<string, any> = {};
   (globalThis as any).chrome = {
@@ -46,7 +56,7 @@ beforeEach(() => {
 describe("GitHub pull polling", () => {
   it("does not mark a past Draft ready while its pending queue contains work", async () => {
     const client = {
-      findManagedPull: vi.fn(async (_login: string, _branch: string, date: string) => date === record.date ? record : undefined),
+      resolveDailyPullTarget: vi.fn(async (_login: string, _compactDate: string, date: string) => targetFor(date === record.date ? record : undefined)),
       markReady: vi.fn(),
     };
     const blocked = { date: record.date, status: "blocked" } as SubmissionQueueItem;
@@ -58,7 +68,7 @@ describe("GitHub pull polling", () => {
 
   it("marks a fully synchronized previous-day Draft ready from live GitHub state", async () => {
     const client = {
-      findManagedPull: vi.fn(async (_login: string, _branch: string, date: string) => date === record.date ? record : undefined),
+      resolveDailyPullTarget: vi.fn(async (_login: string, _compactDate: string, date: string) => targetFor(date === record.date ? record : undefined)),
       markReady: vi.fn(async () => {}),
     };
     const pulls = { [record.date]: { ...record } };
@@ -71,7 +81,7 @@ describe("GitHub pull polling", () => {
 
   it("keeps a previous-day Draft when automatic Ready transition is disabled", async () => {
     const client = {
-      findManagedPull: vi.fn(async (_login: string, _branch: string, date: string) => date === record.date ? record : undefined),
+      resolveDailyPullTarget: vi.fn(async (_login: string, _compactDate: string, date: string) => targetFor(date === record.date ? record : undefined)),
       markReady: vi.fn(),
     };
     const pulls = { [record.date]: { ...record } };
@@ -84,9 +94,10 @@ describe("GitHub pull polling", () => {
 
   it("automatically releases only pull-related blocked work after a Draft is reopened", async () => {
     const reopened = { ...record, date: "2026-08-17", compactDate: "260817", branch: "260817", number: 17 };
-    const client = { findManagedPull: vi.fn(async () => reopened), markReady: vi.fn() };
+    const client = { resolveDailyPullTarget: vi.fn(async () => targetFor(reopened)), markReady: vi.fn() };
     const queue = [
       { date: "2026-08-17", status: "blocked", blockReason: "pull_closed", error: "closed" },
+      { date: "2026-08-17", status: "blocked", blockReason: "pull_merged", error: "merged" },
       { date: "2026-08-17", status: "blocked", error: "catalog" },
     ] as SubmissionQueueItem[];
     const pulls = {
@@ -96,9 +107,79 @@ describe("GitHub pull polling", () => {
     await pollPullRequests(auth, client as any, queue, pulls, new Date("2026-08-17T01:00:00+09:00"));
 
     expect(queue[0]).toMatchObject({ status: "pending", error: undefined, blockReason: undefined });
-    expect(queue[1]).toMatchObject({ status: "blocked", error: "catalog" });
+    expect(queue[1]).toMatchObject({ status: "pending", error: undefined, blockReason: undefined });
+    expect(queue[2]).toMatchObject({ status: "blocked", error: "catalog" });
     expect(pulls["2026-08-17"].state).toBe("draft");
     expect(chrome.storage.local.set).toHaveBeenCalledWith({ pendingQueue: queue });
+  });
+
+  it("stops polling immediately when GitHub rejects the stored token", async () => {
+    const client = {
+      resolveDailyPullTarget: vi.fn(async () => {
+        throw new GitHubError("GitHub API 401: Bad credentials", 401);
+      }),
+      markReady: vi.fn(),
+    };
+
+    await expect(pollPullRequests(auth, client as any, [], {}, new Date("2026-08-17T01:00:00+09:00")))
+      .rejects.toMatchObject({ status: 401 });
+    expect(client.resolveDailyPullTarget).toHaveBeenCalledOnce();
+  });
+
+  it("releases work blocked by a merged pull so it can use a follow-up branch", async () => {
+    const merged = {
+      ...record,
+      state: "merged" as const,
+    };
+    const client = {
+      resolveDailyPullTarget: vi.fn(async () => ({
+        branch: "260816-2",
+        sequence: 2,
+        latestPull: merged,
+        baseSha: "merged-head",
+      })),
+      markReady: vi.fn(),
+    };
+    const queue = [{
+      date: record.date,
+      status: "blocked",
+      blockReason: "pull_merged",
+      error: "merged",
+    }] as SubmissionQueueItem[];
+
+    await pollPullRequests(auth, client as any, queue, {}, new Date("2026-08-17T01:00:00+09:00"));
+
+    expect(queue[0]).toMatchObject({ status: "pending", error: undefined, blockReason: undefined });
+    expect(chrome.storage.local.set).toHaveBeenCalledWith({ pendingQueue: queue });
+  });
+});
+
+describe("expired authentication recovery", () => {
+  it("releases queue items blocked by the previous 401 behavior", () => {
+    const queue = [
+      { status: "blocked", error: "GitHub API 401 (GET /user): Bad credentials", retryAt: undefined },
+      { status: "blocked", error: "GitHub 문제 카탈로그 구조가 올바르지 않습니다." },
+    ] as SubmissionQueueItem[];
+
+    expect(releaseUnauthorizedQueueItems(queue)).toBe(true);
+    expect(queue[0]).toMatchObject({ status: "pending", error: undefined });
+    expect(queue[1]).toMatchObject({ status: "blocked" });
+  });
+});
+
+describe("branch conflict recovery", () => {
+  it("releases queue items blocked by the previous non-fast-forward behavior", () => {
+    const queue = [
+      {
+        status: "blocked",
+        error: "GitHub API 422 (PATCH /repos/ada/leetdash/git/refs/heads/260820): Update is not a fast forward",
+      },
+      { status: "blocked", error: "현재 문제를 leetdash 카탈로그에서 찾지 못했습니다." },
+    ] as SubmissionQueueItem[];
+
+    expect(releaseRefConflictQueueItems(queue)).toBe(true);
+    expect(queue[0]).toMatchObject({ status: "pending", error: undefined });
+    expect(queue[1]).toMatchObject({ status: "blocked" });
   });
 });
 
@@ -108,11 +189,11 @@ describe("today pull refresh", () => {
       ...record,
       date: "2026-08-17",
       compactDate: "260817",
-      branch: "260817",
-      number: 17,
+      branch: "260817-2",
+      number: 18,
       state: "ready" as const,
     };
-    const client = { findManagedPull: vi.fn(async () => live) };
+    const client = { resolveDailyPullTarget: vi.fn(async () => targetFor(live)) };
     const pulls: Record<string, DailyPullRequest> = {};
 
     await expect(refreshTodayPull(
@@ -121,13 +202,13 @@ describe("today pull refresh", () => {
       pulls,
       new Date("2026-08-17T01:00:00+09:00"),
     )).resolves.toEqual({ date: "2026-08-17", pull: live });
-    expect(client.findManagedPull).toHaveBeenCalledWith("ada", "260817", "2026-08-17");
+    expect(client.resolveDailyPullTarget).toHaveBeenCalledWith("ada", "260817", "2026-08-17");
     expect(pulls["2026-08-17"]).toEqual(live);
     expect(chrome.storage.local.set).toHaveBeenCalledWith({ pullSnapshots: pulls });
   });
 
   it("removes a stale cached record when today's pull no longer exists", async () => {
-    const client = { findManagedPull: vi.fn(async () => undefined) };
+    const client = { resolveDailyPullTarget: vi.fn(async () => targetFor(undefined)) };
     const pulls = {
       "2026-08-17": { ...record, date: "2026-08-17", compactDate: "260817", branch: "260817" },
     };
@@ -140,7 +221,7 @@ describe("today pull refresh", () => {
 
   it("does not rewrite storage when the cached GitHub state is unchanged", async () => {
     const live = { ...record, date: "2026-08-17", compactDate: "260817", branch: "260817" };
-    const client = { findManagedPull: vi.fn(async () => ({ ...live })) };
+    const client = { resolveDailyPullTarget: vi.fn(async () => targetFor({ ...live })) };
     const pulls = { "2026-08-17": { ...live } };
 
     await refreshTodayPull(auth, client as any, pulls, new Date("2026-08-17T01:00:00+09:00"));

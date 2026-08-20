@@ -15,7 +15,7 @@ import type {
   SyncHistoryItem,
   SyncStage,
 } from "../shared/model.js";
-import { GitHubClient, GitHubError, submissionBranch } from "./github.js";
+import { GitHubClient, GitHubError, isGitHubUnauthorized } from "./github.js";
 import {
   getCatalogCache,
   getBranchClaims,
@@ -320,7 +320,43 @@ function retryDelay(attempts: number, error: unknown): number {
 }
 
 function isBlocked(error: unknown): boolean {
-  return error instanceof GitHubError && [401, 403, 404, 422].includes(error.status);
+  return error instanceof GitHubError && [403, 404, 422].includes(error.status);
+}
+
+export function releaseUnauthorizedQueueItems(queue: SubmissionQueueItem[]): boolean {
+  let changed = false;
+  for (let index = 0; index < queue.length; index += 1) {
+    const item = queue[index];
+    const unauthorizedError = item.error?.startsWith("GitHub API 401 ")
+      || item.error?.endsWith("(401)");
+    if (item.status !== "blocked" || !unauthorizedError) continue;
+    queue[index] = {
+      ...item,
+      status: "pending",
+      error: undefined,
+      blockReason: undefined,
+      retryAt: undefined,
+    };
+    changed = true;
+  }
+  return changed;
+}
+
+export function releaseRefConflictQueueItems(queue: SubmissionQueueItem[]): boolean {
+  let changed = false;
+  for (let index = 0; index < queue.length; index += 1) {
+    const item = queue[index];
+    if (item.status !== "blocked" || !item.error?.includes("Update is not a fast forward")) continue;
+    queue[index] = {
+      ...item,
+      status: "pending",
+      error: undefined,
+      blockReason: undefined,
+      retryAt: undefined,
+    };
+    changed = true;
+  }
+  return changed;
 }
 
 function safeSubmissionsPath(value: string): string | undefined {
@@ -363,9 +399,15 @@ async function syncItem(
   const directory = `${submissionsPath}/${resolved.sourceKey}/${resolved.submissionKey}`;
   await report("fork", "GitHub fork 준비를 시작합니다.");
   const fork = await client.ensureFork(auth.login, (message) => report("fork", message));
-  const branch = submissionBranch(auth.login, item.compactDate);
+  const target = await client.resolveDailyPullTarget(auth.login, item.compactDate, item.date);
+  const branch = target.branch;
   await report("branch", "날짜별 제출 브랜치를 준비하는 중입니다.");
-  const branchState = await client.ensureBranch(fork, branch, (message) => report("branch", message));
+  const branchState = await client.ensureBranch(
+    fork,
+    branch,
+    (message) => report("branch", message),
+    target.baseSha,
+  );
   const branchClaims = await getBranchClaims();
   const claimKey = `${auth.login.toLowerCase()}:${item.date}`;
   let dailyPull = await client.findManagedDraftPull(auth.login, branch, item.date);
@@ -435,8 +477,10 @@ export async function pollPullRequests(
     const compactDate = date.replaceAll("-", "").slice(2);
     let pull: DailyPullRequest | undefined;
     try {
-      pull = await client.findManagedPull(auth.login, submissionBranch(auth.login, compactDate), date);
-    } catch {
+      const target = await client.resolveDailyPullTarget(auth.login, compactDate, date);
+      pull = target.latestPull;
+    } catch (error) {
+      if (isGitHubUnauthorized(error)) throw error;
       continue;
     }
     if (!pull) {
@@ -451,8 +495,24 @@ export async function pollPullRequests(
       try {
         await client.markReady(pull.nodeId);
         pull = { ...pull, state: "ready" };
-      } catch {
+      } catch (error) {
+        if (isGitHubUnauthorized(error)) throw error;
         // Keep the live Draft snapshot and retry the Ready transition on the next poll.
+      }
+    }
+    const targetAvailableAfterMerge = pull.state === "merged";
+    if (pull.state === "draft" || targetAvailableAfterMerge) {
+      for (let index = 0; index < queue.length; index += 1) {
+        const item = queue[index];
+        const reopenable = pull.state === "draft"
+          && (item.blockReason === "pull_closed"
+            || item.blockReason === "pull_ready"
+            || item.blockReason === "pull_merged");
+        const rollover = targetAvailableAfterMerge && item.blockReason === "pull_merged";
+        if (item.date === date && (reopenable || rollover)) {
+          queue[index] = { ...item, status: "pending", error: undefined, blockReason: undefined, retryAt: undefined };
+          queueChanged = true;
+        }
       }
     }
     if (date < today && (pull.state === "ready" || pull.state === "merged")) {
@@ -461,15 +521,6 @@ export async function pollPullRequests(
         snapshotsChanged = true;
       }
       continue;
-    }
-    if (pull.state === "draft") {
-      for (let index = 0; index < queue.length; index += 1) {
-        const item = queue[index];
-        if (item.date === date && (item.blockReason === "pull_closed" || item.blockReason === "pull_ready")) {
-          queue[index] = { ...item, status: "pending", error: undefined, blockReason: undefined, retryAt: undefined };
-          queueChanged = true;
-        }
-      }
     }
     if (!samePullState(pullSnapshots[date], pull)) {
       pullSnapshots[date] = pull;
@@ -489,8 +540,8 @@ export async function refreshTodayPull(
   now = new Date(),
 ): Promise<{ date: string; pull?: DailyPullRequest }> {
   const today = toSeoulDate(now);
-  const branch = submissionBranch(auth.login, today.compact);
-  const pull = await client.findManagedPull(auth.login, branch, today.date);
+  const target = await client.resolveDailyPullTarget(auth.login, today.compact, today.date);
+  const pull = target.latestPull;
   const changed = !samePullState(pullSnapshots[today.date], pull);
 
   if (pull) pullSnapshots[today.date] = pull;
@@ -519,6 +570,7 @@ export async function synchronize(
   const [queue, history, pullSnapshots, settings] = await Promise.all([
     getPendingQueue(), getSyncHistory(), getPullSnapshots(), getSettings(),
   ]);
+  if (releaseRefConflictQueueItems(queue)) await setStored(storageKeys.pendingQueue, queue);
   await pollPullRequests(auth, client, queue, pullSnapshots, new Date(), settings.autoReadyAfterMidnight);
 
   for (let index = 0; index < queue.length;) {
@@ -564,12 +616,15 @@ export async function synchronize(
       });
     } catch (error) {
       const attempts = queue[index].attempts;
+      const unauthorized = isGitHubUnauthorized(error);
       queue[index] = {
         ...queue[index],
-        status: isBlocked(error) ? "blocked" : "pending",
+        status: unauthorized ? "pending" : isBlocked(error) ? "blocked" : "pending",
         error: error instanceof Error ? error.message : "알 수 없는 동기화 오류입니다.",
         blockReason: error instanceof GitHubError ? error.blockReason : undefined,
-        retryAt: isBlocked(error) ? undefined : new Date(Date.now() + retryDelay(attempts, error)).toISOString(),
+        retryAt: unauthorized || isBlocked(error)
+          ? undefined
+          : new Date(Date.now() + retryDelay(attempts, error)).toISOString(),
       };
       await setStored(storageKeys.pendingQueue, queue);
       await onProgress?.({
@@ -579,6 +634,7 @@ export async function synchronize(
         status: "failed",
         message: queue[index].error ?? "알 수 없는 동기화 오류입니다.",
       });
+      if (unauthorized) throw error;
       index += 1;
     }
   }

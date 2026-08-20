@@ -62,6 +62,18 @@ const usersFileUrl = "https://github.com/whoisyourbias/leetdash/blob/master/data
 let pollingTimer: number | undefined;
 let refreshScheduled = false;
 
+function spinner(className = "login-spinner"): HTMLSpanElement {
+  const result = element("span", className);
+  result.setAttribute("aria-hidden", "true");
+  return result;
+}
+
+function stopAuthenticationPolling(): void {
+  if (pollingTimer === undefined) return;
+  window.clearInterval(pollingTimer);
+  pollingTimer = undefined;
+}
+
 const syncSteps = [
   { stage: "catalog", label: "문제 확인" },
   { stage: "user", label: "사용자 확인" },
@@ -434,8 +446,26 @@ function render(state: PopupState): void {
     app.append(registration);
     if (state.deviceSession) {
       const card = element("section", "device-card");
-      const label = element("p", "muted");
-      label.textContent = state.deviceSession.error ?? "GitHub 페이지에서 아래 코드를 입력하세요.";
+      if (state.deviceSession.error) {
+        stopAuthenticationPolling();
+        const error = element("p", "device-error");
+        error.textContent = state.deviceSession.error;
+        card.append(error);
+      } else {
+        const status = element("div", "login-status");
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        const statusCopy = element("div", "login-status-copy");
+        const statusTitle = element("strong");
+        statusTitle.textContent = "GitHub 로그인 진행 중";
+        const statusDescription = element("span", "muted");
+        statusDescription.textContent = "인증 완료 여부를 확인하고 있습니다. 완료되면 자동으로 로그인됩니다.";
+        statusCopy.append(statusTitle, statusDescription);
+        status.append(spinner(), statusCopy);
+        card.append(status);
+      }
+      const label = element("p", "muted device-instruction");
+      label.textContent = "GitHub 인증 페이지에 아래 코드를 입력하세요.";
       const code = element("code", "device-code");
       code.textContent = state.deviceSession.userCode;
       const link = element("a", "button");
@@ -451,15 +481,17 @@ function render(state: PopupState): void {
         pollingTimer = window.setInterval(async () => render(await send("auth:poll")), 5000);
       }
     } else {
-      app.append(button("GitHub 로그인", async () => render(await send("auth:start"))));
+      const loginButton = button("GitHub 로그인", async () => {
+        loginButton.disabled = true;
+        loginButton.replaceChildren(spinner("login-spinner button-spinner"), document.createTextNode("로그인 준비 중..."));
+        render(await send("auth:start"));
+      });
+      app.append(loginButton);
     }
     return;
   }
 
-  if (pollingTimer !== undefined) {
-    window.clearInterval(pollingTimer);
-    pollingTimer = undefined;
-  }
+  stopAuthenticationPolling();
   const account = element("section", "account");
   if (state.auth.avatarUrl) {
     const avatar = element("img");

@@ -6,6 +6,17 @@ const oauthHeaders = {
   "Content-Type": "application/x-www-form-urlencoded",
 };
 
+export function withUnauthorizedHandler(
+  fetchImpl: typeof fetch,
+  onUnauthorized: () => void | Promise<void>,
+): typeof fetch {
+  return (async (input: URL | RequestInfo, init?: RequestInit) => {
+    const response = await fetchImpl.call(globalThis, input, init);
+    if (response.status === 401) await onUnauthorized();
+    return response;
+  }) as typeof fetch;
+}
+
 export class DeviceFlowError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message);

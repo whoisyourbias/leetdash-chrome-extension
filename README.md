@@ -72,6 +72,8 @@ unzip -t artifacts/leetdash-extension.zip
 
 확장 프로그램은 GitHub OAuth Device Flow를 사용하며 공개 Client ID만 포함합니다. OAuth App에는 `Enable Device Flow`가 활성화되어 있습니다. Client ID는 앱을 식별할 뿐 인증 비밀로 사용하지 않습니다. GitHub access token은 사용자가 Device Flow를 승인한 뒤에만 발급됩니다.
 
+GitHub가 만료되거나 취소된 token에 `401 Unauthorized`를 반환하면 저장된 인증만 해제하고 재로그인을 안내합니다. 아직 업로드하지 않은 풀이는 로컬 큐에 보존되며, 재로그인 후 자동으로 동기화를 다시 시도합니다.
+
 ## 동작
 
 - 제출 버튼 또는 `Ctrl/Cmd+Enter` 시점의 코드와 언어를 캡처하고 10분 안에 Accepted 결과가 나타날 때만 큐에 넣습니다.
@@ -80,11 +82,11 @@ unzip -t artifacts/leetdash-extension.zip
 - 팝업의 `현재 열린 문제`에는 제출 전부터 자동 감지된 provider와 문제 번호가 표시됩니다. 이를 수정하면 중앙 카탈로그 검증을 통과한 값이 문제 화면별 `problemOverride`로 저장되며, 같은 화면의 기존 `pending` 또는 `blocked` 제출에도 즉시 반영됩니다.
 - 사용자가 한 번 저장한 `problemOverride`는 같은 문제의 새로고침·재방문·재제출에서 유지되고 자동 재감지, 중복 Accepted 캡처, 재시도보다 항상 우선합니다. 팝업에서 명시적으로 `자동 감지로 되돌리기`를 선택해야만 제거됩니다.
 - 일반 참가자는 fork가 없으면 `<githubUsername>/leetdash`를 자동 생성합니다. 원본 저장소 소유자는 fork 대신 `submissions/<githubUsername>/YYMMDD` upstream branch를 사용하되 항상 Draft PR을 거칩니다.
-- Accepted 시각의 Asia/Seoul 날짜 `YYMMDD`를 branch와 Draft PR 제목으로 사용합니다.
+- Accepted 시각의 Asia/Seoul 날짜 `YYMMDD`를 branch와 Draft PR 제목으로 사용합니다. 같은 날짜 PR이 이미 병합되었다면 `YYMMDD-2`, `YYMMDD-3` 순서로 후속 branch와 Draft PR을 자동 생성합니다.
 - 같은 문제를 다른 언어로 다시 통과하면 기존 `Solution.*`를 제거하고 최신 코드를 한 커밋으로 기록합니다.
 - 기본 설정에서는 KST 자정 이후 미동기화 큐가 없으면 Draft를 Ready로 바꿉니다. 팝업의 `자정 이후 자동 Ready 전환`을 끄면 Draft를 그대로 유지하며, 다시 켜면 다음 동기화에서 지난 날짜 Draft를 처리합니다. Chrome이 꺼져 있었다면 다음 시작이나 15분 주기 복구 작업에서 처리합니다.
 
-팝업의 `다시 동기화`는 네트워크 실패뿐 아니라 카탈로그 갱신 후 보류된 제출도 다시 검사합니다. 이미 Ready/closed/merged된 날짜 branch에는 새 커밋을 만들지 않고 확인 필요 상태로 남깁니다.
+팝업의 `다시 동기화`는 네트워크 실패뿐 아니라 카탈로그 갱신 후 보류된 제출도 다시 검사합니다. Ready/closed 날짜 branch는 새 커밋을 만들지 않고 확인 필요 상태로 남기며, merged 날짜 branch는 다음 번호의 후속 Draft PR로 이어서 제출합니다.
 
 ## 상태 관리 아키텍처
 
@@ -93,7 +95,7 @@ PR의 실제 상태는 GitHub를 단일 source of truth로 사용합니다. 확�
 - `draft`: 새 풀이를 누적할 수 있습니다.
 - `ready`: 새 커밋을 차단하고 사용자 확인을 요청합니다.
 - `closed`: 새 PR을 중복 생성하지 않고 GitHub에서 기존 PR을 다시 열도록 안내합니다.
-- `merged`: 해당 날짜 작업이 종료된 것으로 보고 새 커밋을 차단합니다.
+- `merged`: 다음 번호의 날짜 branch를 직전 PR head에서 생성하고 새 Draft PR에 제출을 이어갑니다.
 
 GitHub 상태 폴링은 팝업을 열 때, 확장 프로그램 시작 시, 제출 동기화 전, 15분 주기 alarm, KST 자정 처리 시점에 실행됩니다. 배경 폴링은 오늘·어제, 미동기화 제출이 있는 날짜, 아직 Draft/closed로 캐시된 날짜를 조회합니다. `pullSnapshots`는 GitHub 조회가 실패했을 때 마지막 확인 상태를 보여주기 위한 캐시일 뿐, 커밋·PR 생성 여부를 결정하는 원본이 아닙니다. 과거 Ready/merged 스냅샷은 추가 폴링이 필요 없으므로 캐시에서 제거합니다.
 
@@ -106,4 +108,4 @@ GitHub 상태 폴링은 팝업을 열 때, 확장 프로그램 시작 시, 제�
 - `pullSnapshots`: GitHub PR 상태의 비권위적 캐시
 - `branchClaims`: PR이 아직 없는 branch가 확장 프로그램이 생성한 branch인지 확인하기 위한 로컬 소유 기록
 
-닫힌 PR을 Draft로 다시 열면 다음 폴링에서 이를 감지하고, `pull_closed` 또는 `pull_ready` 사유로만 보류된 같은 날짜의 제출을 다시 `pending`으로 전환합니다. 인증, 카탈로그, 지원 언어 오류로 보류된 제출은 PR 상태 변경만으로 자동 재시도하지 않습니다.
+닫힌 PR을 Draft로 다시 열면 다음 폴링에서 이를 감지하고, `pull_closed` 또는 `pull_ready` 사유로 보류된 같은 날짜의 제출을 다시 `pending`으로 전환합니다. 이전 버전에서 `pull_merged`로 보류된 제출도 후속 Draft PR을 사용할 수 있게 자동 복구합니다. 인증, 카탈로그, 지원 언어 오류로 보류된 제출은 PR 상태 변경만으로 자동 재시도하지 않습니다.

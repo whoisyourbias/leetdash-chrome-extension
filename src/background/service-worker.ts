@@ -1,4 +1,4 @@
-import { pollDeviceFlow, startDeviceFlow } from "./auth.js";
+import { pollDeviceFlow, startDeviceFlow, withUnauthorizedHandler } from "./auth.js";
 import {
   getAuth,
   getDeviceSession,
@@ -19,15 +19,16 @@ import {
   enqueueAccepted,
   loadCatalog,
   refreshTodayPull,
+  releaseUnauthorizedQueueItems,
   saveActiveProblemOverride,
   saveProblemOverride,
   synchronize,
 } from "./sync.js";
-import { GitHubClient } from "./github.js";
+import { GitHubClient, isGitHubUnauthorized } from "./github.js";
 import { nextSeoulMidnight, toSeoulDate } from "../shared/date.js";
 import { providerForUrl, resolveCatalogProblem } from "../shared/catalog.js";
 import { problemContextKey } from "../shared/problem-context.js";
-import type { ActiveProblem, DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SubmissionQueueItem, SyncProgressEvent } from "../shared/model.js";
+import type { ActiveProblem, AuthState, DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SubmissionQueueItem, SyncProgressEvent } from "../shared/model.js";
 
 const SYNC_ALARM = "submission-sync";
 const CLOSE_ALARM = "day-close";
@@ -49,11 +50,20 @@ function scheduleAlarms(): void {
   chrome.alarms.create(CLOSE_ALARM, { when: nextSeoulMidnight() });
 }
 
+async function invalidateAuth(auth: AuthState): Promise<void> {
+  const storedAuth = await getAuth();
+  if (storedAuth?.token === auth.token) await removeStored(storageKeys.auth);
+}
+
+function fetchForAuth(auth: AuthState): typeof fetch {
+  return withUnauthorizedHandler(fetch, () => invalidateAuth(auth));
+}
+
 async function runSynchronization(): Promise<void> {
   if (synchronization) return synchronization;
   const auth = await getAuth();
   if (!auth) return;
-  synchronization = synchronize(auth, fetch, publishSyncProgress)
+  synchronization = synchronize(auth, fetchForAuth(auth), publishSyncProgress)
     .catch(() => undefined)
     .finally(() => { synchronization = undefined; });
   return synchronization;
@@ -72,8 +82,11 @@ async function pollAuthentication(): Promise<void> {
       if (!registered) {
         throw new Error(`${result.auth.login} 계정이 중앙 whoisyourbias/leetdash 저장소의 data/users.json에 등록되지 않았습니다.`);
       }
+      const queue = await getPendingQueue();
+      const queueChanged = releaseUnauthorizedQueueItems(queue);
       await Promise.all([
         setStored(storageKeys.auth, result.auth),
+        queueChanged ? setStored(storageKeys.pendingQueue, queue) : Promise.resolve(),
         removeStored(storageKeys.deviceSession),
         chrome.alarms.clear(AUTH_ALARM),
       ]);
@@ -193,7 +206,7 @@ function readSweaProblemMetadata(): { problemIdHint?: string; pageTitle?: string
   return { pageUrl: contextUrl.href };
 }
 
-async function getActiveProblem(auth: { token: string } | undefined): Promise<ActiveProblem | undefined> {
+async function getActiveProblem(auth: AuthState | undefined): Promise<ActiveProblem | undefined> {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!Number.isInteger(tab?.id) || typeof tab.url !== "string") return undefined;
   const provider = providerForUrl(tab.url);
@@ -248,7 +261,7 @@ async function getActiveProblem(auth: { token: string } | undefined): Promise<Ac
   }
   if (!problemOverride && auth) {
     try {
-      const catalog = await loadCatalog(new GitHubClient(auth.token));
+      const catalog = await loadCatalog(new GitHubClient(auth.token, fetchForAuth(auth)));
       const resolved = resolveCatalogProblem(catalog, provider, tab.url, detectedProblemId);
       if (resolved) {
         detectedProblemId = resolved.problem.problemId;
@@ -379,17 +392,18 @@ async function acceptAttempt(sender: any): Promise<any> {
 }
 
 async function publicState(): Promise<any> {
-  const [auth, deviceSession, queue, history, pullSnapshots, settings, syncActivity] = await Promise.all([
+  let [auth, deviceSession, queue, history, pullSnapshots, settings, syncActivity] = await Promise.all([
     getAuth(), getDeviceSession(), getPendingQueue(), getSyncHistory(), getPullSnapshots(), getSettings(), getSyncActivity(),
   ]);
   let today = toSeoulDate(new Date()).date;
   let todayPull: DailyPullRequest | undefined = pullSnapshots[today];
   if (auth) {
     try {
-      const refreshed = await refreshTodayPull(auth, new GitHubClient(auth.token), pullSnapshots);
+      const refreshed = await refreshTodayPull(auth, new GitHubClient(auth.token, fetchForAuth(auth)), pullSnapshots);
       today = refreshed.date;
       todayPull = refreshed.pull;
-    } catch {
+    } catch (error) {
+      if (isGitHubUnauthorized(error)) auth = await getAuth();
       // Keep the cached record available when GitHub cannot be reached.
     }
   }
@@ -467,7 +481,7 @@ async function handleMessage(message: any, sender: any): Promise<any> {
         throw new Error("지원하지 않는 공급자입니다.");
       }
       if (typeof message.problemId !== "string") throw new Error("문제 번호가 올바르지 않습니다.");
-      await saveProblemOverride(auth, message.itemId, message.provider as Provider, message.problemId);
+      await saveProblemOverride(auth, message.itemId, message.provider as Provider, message.problemId, fetchForAuth(auth));
       await runSynchronization();
       return publicState();
     }
@@ -495,6 +509,7 @@ async function handleMessage(message: any, sender: any): Promise<any> {
         activeProblem,
         message.provider as Provider,
         message.problemId,
+        fetchForAuth(auth),
       );
       await runSynchronization();
       return publicState();

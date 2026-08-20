@@ -194,7 +194,8 @@ function acceptedText(): string {
 
 function hasAcceptedResult(text: string): boolean {
   if (provider === "leetcode") return /\bAccepted\b|정답입니다|통과했습니다/i.test(text);
-  if (provider === "programmers") return /정확성\s*:\s*100(?:\.0+)?|합계\s*:\s*100(?:\.0+)?|테스트를 통과|정답입니다/i.test(text);
+	if (provider === "programmers")
+		return /합계\s*:\s*100\.0\s*\/\s*100\.0/i.test(text);
   return /\bAccepted\b|\bPass\b|정답입니다|모든 테스트케이스를 통과/i.test(text);
 }
 

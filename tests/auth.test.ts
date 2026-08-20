@@ -1,13 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { pollDeviceFlow, startDeviceFlow } from "../src/background/auth";
+import { pollDeviceFlow, startDeviceFlow, withUnauthorizedHandler } from "../src/background/auth";
 import { GITHUB_CLIENT_ID } from "../src/config";
 
-function response(body: unknown): Response {
-  return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+function response(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
 describe("GitHub Device Flow", () => {
+  it("invalidates stored authentication when a GitHub request returns 401", async () => {
+    const onUnauthorized = vi.fn(async () => {});
+    const fetchImpl = vi.fn(function (this: unknown) {
+      expect(this).toBe(globalThis);
+      return Promise.resolve(response({ message: "Bad credentials" }, 401));
+    });
+    const authenticatedFetch = withUnauthorizedHandler(fetchImpl as typeof fetch, onUnauthorized);
+
+    const result = await authenticatedFetch("https://api.github.com/user");
+
+    expect(result.status).toBe(401);
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
   it("ships the public OAuth client ID without requiring build-time configuration", () => {
     expect(GITHUB_CLIENT_ID).toBe("Ov23liucGtf8zZHCwYq9");
   });

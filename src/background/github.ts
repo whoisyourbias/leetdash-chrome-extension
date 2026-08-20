@@ -5,11 +5,20 @@ import type { DailyPullRequest, ProblemCatalog, PullBlockReason, UsersFile } fro
 export const UPSTREAM = "whoisyourbias/leetdash";
 export const BASE_BRANCH = "master";
 
-export function submissionBranch(login: string, compactDate: string): string {
+export function submissionBranch(login: string, compactDate: string, sequence = 1): string {
   const [upstreamOwner] = UPSTREAM.split("/");
+  const branchName = sequence > 1 ? `${compactDate}-${sequence}` : compactDate;
   return login.toLowerCase() === upstreamOwner.toLowerCase()
-    ? `submissions/${login}/${compactDate}`
-    : compactDate;
+    ? `submissions/${login}/${branchName}`
+    : branchName;
+}
+
+export interface DailyPullTarget {
+  branch: string;
+  sequence: number;
+  pull?: DailyPullRequest;
+  latestPull?: DailyPullRequest;
+  baseSha?: string;
 }
 
 interface RequestOptions {
@@ -31,6 +40,10 @@ export class GitHubError extends Error {
   }
 }
 
+export function isGitHubUnauthorized(error: unknown): error is GitHubError {
+  return error instanceof GitHubError && error.status === 401;
+}
+
 export class GitHubClient {
   constructor(
     private readonly token: string,
@@ -44,6 +57,9 @@ export class GitHubClient {
     // GitHubClient instance as its receiver inside a service worker.
     const response = await this.fetchImpl.call(globalThis, url, {
       method,
+      // Authenticated API reads must not reuse a stale branch ref. A cached
+      // ref makes every optimistic retry build on the same outdated parent.
+      cache: method.toUpperCase() === "GET" ? "no-store" : undefined,
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${this.token}`,
@@ -79,6 +95,7 @@ export class GitHubClient {
     url.searchParams.set("ref", ref);
     const response = await this.fetchImpl.call(globalThis, url, {
       method: "GET",
+      cache: "no-store",
       headers: {
         // The regular Contents response omits `content` for files over 1 MB.
         // Raw media works for the checked-in catalog, which is currently ~4.8 MB.
@@ -165,26 +182,32 @@ export class GitHubClient {
     fork: string,
     branch: string,
     onProgress?: OperationProgress,
+    baseSha?: string,
   ): Promise<{ created: boolean; atBase: boolean }> {
     const encoded = branch.split("/").map(encodeURIComponent).join("/");
-    // Base the daily branch on the fork's own default branch. Copying the
-    // upstream SHA into a stale fork can import workflow-file changes and
-    // GitHub rejects that ref creation for the intentionally narrow
-    // `public_repo` OAuth token. The PR still targets the current upstream
-    // base, so only commits unique to this daily branch are proposed.
-    await onProgress?.("fork의 기준 브랜치를 확인하는 중입니다.");
-    const forkBaseRef = await this.request<any>("GET", `/repos/${fork}/git/ref/heads/${BASE_BRANCH}`);
+    // Start the first daily branch from the fork's default branch. Follow-up
+    // branches start from the previous merged PR head so repeated submissions
+    // of the same problem retain the prior solution tree. Neither path imports
+    // an upstream workflow SHA that the narrow `public_repo` token cannot use.
+    let sourceSha = baseSha;
+    if (sourceSha) {
+      await onProgress?.("직전 병합 PR의 커밋을 후속 브랜치 기준으로 사용합니다.");
+    } else {
+      await onProgress?.("fork의 기준 브랜치를 확인하는 중입니다.");
+      const forkBaseRef = await this.request<any>("GET", `/repos/${fork}/git/ref/heads/${BASE_BRANCH}`);
+      sourceSha = forkBaseRef.object.sha;
+    }
     await onProgress?.(`${branch} 날짜 브랜치가 있는지 확인하는 중입니다.`);
     try {
       const existing = await this.request<any>("GET", `/repos/${fork}/git/ref/heads/${encoded}`);
       await onProgress?.(`${branch} 날짜 브랜치를 확인했습니다.`);
-      return { created: false, atBase: existing.object.sha === forkBaseRef.object.sha };
+      return { created: false, atBase: existing.object.sha === sourceSha };
     } catch (error) {
       if (!(error instanceof GitHubError) || error.status !== 404) throw error;
     }
     await onProgress?.(`${branch} 날짜 브랜치를 생성하는 중입니다.`);
     await this.request("POST", `/repos/${fork}/git/refs`, {
-      body: { ref: `refs/heads/${branch}`, sha: forkBaseRef.object.sha },
+      body: { ref: `refs/heads/${branch}`, sha: sourceSha },
     });
     await onProgress?.(`${branch} 날짜 브랜치를 생성했습니다.`);
     return { created: true, atBase: true };
@@ -256,7 +279,14 @@ export class GitHubClient {
         await onProgress?.("풀이 커밋을 날짜 브랜치에 반영했습니다.");
         return { changed: true, sha: nextCommit.sha };
       } catch (error) {
-        if (!(error instanceof GitHubError) || ![409, 422].includes(error.status) || attempt === 2) throw error;
+        const refConflict = error instanceof GitHubError
+          && (error.status === 409 || (error.status === 422 && /not a fast forward/i.test(error.message)));
+        if (!refConflict) throw error;
+        if (attempt === 2) {
+          throw new GitHubError("동시 커밋 충돌이 계속되어 잠시 후 다시 시도합니다.", 409);
+        }
+        await onProgress?.("다른 풀이가 먼저 반영되어 최신 브랜치에서 다시 시도합니다.");
+        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
       }
     }
     throw new GitHubError("동시 커밋 충돌을 해결하지 못했습니다.", 409);
@@ -270,29 +300,58 @@ export class GitHubClient {
     return pulls;
   }
 
-  async findManagedPull(login: string, branch: string, date: string): Promise<DailyPullRequest | undefined> {
+  private async findManagedPullDetails(
+    login: string,
+    branch: string,
+    date: string,
+  ): Promise<{ pull: DailyPullRequest; headSha?: string } | undefined> {
     const marker = `<!-- leetdash-extension:date=${date} -->`;
     const pulls = await this.listPulls(login, branch, "all");
-    const pull = pulls.find((candidate) => candidate.head?.ref === branch && candidate.head?.user?.login === login);
-    if (!pull) return undefined;
-    if (typeof pull.body !== "string" || !pull.body.includes(marker)) {
+    const candidate = pulls.find((pull) => pull.head?.ref === branch && pull.head?.user?.login === login);
+    if (!candidate) return undefined;
+    if (typeof candidate.body !== "string" || !candidate.body.includes(marker)) {
       throw new GitHubError(`${branch} branch의 기존 PR은 확장 프로그램이 만든 PR이 아닙니다.`, 422);
     }
     return {
-      date,
-      compactDate: date.replaceAll("-", "").slice(2),
-      branch,
-      number: pull.number,
-      nodeId: pull.node_id,
-      url: pull.html_url,
-      state: pull.merged_at
-        ? "merged"
-        : pull.state === "closed"
-          ? "closed"
-          : pull.draft
-            ? "draft"
-            : "ready",
+      pull: {
+        date,
+        compactDate: date.replaceAll("-", "").slice(2),
+        branch,
+        number: candidate.number,
+        nodeId: candidate.node_id,
+        url: candidate.html_url,
+        state: candidate.merged_at
+          ? "merged"
+          : candidate.state === "closed"
+            ? "closed"
+            : candidate.draft
+              ? "draft"
+              : "ready",
+      },
+      headSha: typeof candidate.head?.sha === "string" ? candidate.head.sha : undefined,
     };
+  }
+
+  async findManagedPull(login: string, branch: string, date: string): Promise<DailyPullRequest | undefined> {
+    return (await this.findManagedPullDetails(login, branch, date))?.pull;
+  }
+
+  async resolveDailyPullTarget(login: string, compactDate: string, date: string): Promise<DailyPullTarget> {
+    let latestPull: DailyPullRequest | undefined;
+    let baseSha: string | undefined;
+    for (let sequence = 1; ; sequence += 1) {
+      const branch = submissionBranch(login, compactDate, sequence);
+      const details = await this.findManagedPullDetails(login, branch, date);
+      if (!details) return { branch, sequence, latestPull, baseSha };
+      latestPull = details.pull;
+      if (details.pull.state !== "merged") {
+        return { branch, sequence, pull: details.pull, latestPull, baseSha };
+      }
+      if (!details.headSha) {
+        throw new GitHubError(`${branch} 병합 PR의 head commit을 확인하지 못했습니다.`, 502);
+      }
+      baseSha = details.headSha;
+    }
   }
 
   async findManagedDraftPull(login: string, branch: string, date: string): Promise<DailyPullRequest | undefined> {
@@ -317,6 +376,7 @@ export class GitHubClient {
   ): Promise<DailyPullRequest> {
     const marker = `<!-- leetdash-extension:date=${date} -->`;
     const compactDate = date.replaceAll("-", "").slice(2);
+    const title = branch.split("/").at(-1) ?? compactDate;
     await onProgress?.("기존 Draft PR을 확인하는 중입니다.");
     const managed = await this.findManagedDraftPull(login, branch, date);
     if (managed) {
@@ -328,7 +388,7 @@ export class GitHubClient {
       body: {
         base: BASE_BRANCH,
         head: `${login}:${branch}`,
-        title: compactDate,
+        title,
         draft: true,
         body: `${marker}\n\nChrome 확장 프로그램이 ${date}에 Accepted된 풀이를 누적합니다.`,
       },
