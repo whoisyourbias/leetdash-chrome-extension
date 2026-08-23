@@ -116,6 +116,23 @@ function problemPageTitle(): string {
   return problemDocument.title || document.title;
 }
 
+function problemDifficultyHint(): string | undefined {
+  if (provider !== "swea") return undefined;
+  let problemDocument = document;
+  try {
+    if (window.top?.document) problemDocument = window.top.document;
+  } catch {
+    // Cross-origin frames can only inspect their own document.
+  }
+  for (const element of problemDocument.querySelectorAll("[class*='badgeC-d'], [class*='difficulty']")) {
+    const marker = `${element.className} ${element.textContent ?? ""}`;
+    const level = /(?:badgeC-d|\bD)([1-8])\b/i.exec(marker);
+    if (level) return `D${level[1]}`;
+    if (/\bAttack\b/i.test(marker)) return "Attack";
+  }
+  return undefined;
+}
+
 function showToast(message: string, status: "info" | "success" | "error" = "info", link?: string): void {
   document.getElementById("leetdash-extension-toast")?.remove();
   const toast = document.createElement("div");
@@ -159,6 +176,8 @@ async function armCapture(): Promise<boolean> {
     type: "capture-attempt",
     provider,
     problemIdHint: problemIdHint(),
+    problemDifficultyHint: problemDifficultyHint(),
+    problemSourceUrlHint: url.href,
     pageTitle,
     languageHint: languageHint(),
   });
@@ -249,7 +268,12 @@ if (provider) {
       showToast(message.message, message.status === "synced" ? "success" : "error", message.prUrl);
     }
     if (message?.type === "problem-metadata:get") {
-      sendResponse({ problemIdHint: problemIdHint(), pageTitle: problemPageTitle(), pageUrl: url.href });
+      sendResponse({
+        problemIdHint: problemIdHint(),
+        problemDifficultyHint: problemDifficultyHint(),
+        pageTitle: problemPageTitle(),
+        pageUrl: url.href,
+      });
     }
   });
 }

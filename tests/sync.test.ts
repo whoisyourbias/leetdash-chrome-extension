@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyActiveProblemOverrideToQueue, applyProblemOverride, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
+import { applyActiveProblemOverrideToQueue, applyProblemOverride, buildDynamicProblemMeta, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
 import type { ActiveProblem, AuthState, DailyPullRequest, PendingAttempt, ProblemCatalog, ProblemOverride, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
 
 const auth: AuthState = { login: "ada", token: "token" };
@@ -41,6 +41,39 @@ beforeEach(() => {
       }),
     } },
   };
+});
+
+describe("dynamic SWEA metadata", () => {
+  it("serializes the accepted attempt and problem snapshot without source code", () => {
+    const item = {
+      provider: "swea",
+      language: "Java",
+      acceptedAt: "2026-08-23T12:00:00.000Z",
+      code: "class Main {}",
+    } as SubmissionQueueItem;
+
+    const source = buildDynamicProblemMeta(item, {
+      provider: "swea",
+      problemId: "76543210",
+      title: "사용자 정의 문제",
+      difficulty: "D5",
+      sourceUrl: "https://swexpertacademy.com/problem/76543210",
+    });
+
+    expect(JSON.parse(source)).toEqual({
+      status: "solved",
+      language: "Java",
+      solvedAt: "2026-08-23T12:00:00.000Z",
+      problem: {
+        provider: "swea",
+        problemId: "76543210",
+        title: "사용자 정의 문제",
+        difficulty: "D5",
+        sourceUrl: "https://swexpertacademy.com/problem/76543210",
+      },
+    });
+    expect(source).not.toContain("class Main");
+  });
 });
 
 describe("GitHub pull polling", () => {

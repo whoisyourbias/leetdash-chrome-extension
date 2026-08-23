@@ -158,6 +158,41 @@ describe("GitHub daily submission orchestration", () => {
       .toEqual({ sha: "new-commit", force: false });
   });
 
+  it("writes a dynamic SWEA solution and meta snapshot in one tree commit", async () => {
+    const requests: Array<{ url: URL; init: RequestInit; body: any }> = [];
+    let blobIndex = 0;
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      requests.push({ url, init, body });
+      if (url.pathname.endsWith("/git/ref/heads/260823")) return response({ object: { sha: "parent" } });
+      if (url.pathname.endsWith("/git/commits/parent")) return response({ tree: { sha: "base-tree" } });
+      if (url.pathname.endsWith("/git/trees/base-tree")) return response({ tree: [] });
+      if (url.pathname.endsWith("/git/blobs")) return response({ sha: `blob-${++blobIndex}` }, 201);
+      if (url.pathname.endsWith("/git/trees")) return response({ sha: "new-tree" }, 201);
+      if (url.pathname.endsWith("/git/commits")) return response({ sha: "new-commit" }, 201);
+      if (url.pathname.endsWith("/git/refs/heads/260823")) return response({ object: { sha: "new-commit" } });
+      throw new Error(`Unexpected request: ${init.method} ${url.pathname}`);
+    });
+    const client = new GitHubClient("token", fetchImpl as typeof fetch);
+
+    await client.commitSolution({
+      fork: "ada/leetdash",
+      branch: "260823",
+      directory: "submissions/ada/swea/76543210",
+      extension: "java",
+      code: "class Main {}",
+      meta: "{\"status\":\"solved\"}\n",
+      message: "solve: swea 76543210",
+    });
+
+    const treeRequest = requests.find(({ url, init }) => url.pathname.endsWith("/git/trees") && init.method === "POST");
+    expect(treeRequest?.body.tree).toEqual([
+      { path: "submissions/ada/swea/76543210/Solution.java", mode: "100644", type: "blob", sha: "blob-1" },
+      { path: "submissions/ada/swea/76543210/meta.json", mode: "100644", type: "blob", sha: "blob-2" },
+    ]);
+  });
+
   it("reuses the exact open Draft PR", async () => {
     const pull = {
       number: 17,

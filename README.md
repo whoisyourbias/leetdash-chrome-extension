@@ -44,7 +44,7 @@ GitHub Release의 ZIP으로 설치할 때는 먼저 압축을 푼 다음, 압축
 5. 감지 결과가 틀렸다면 `현재 문제 수정`에서 올바른 공급자와 번호를 저장합니다. 사용자 지정 값은 같은 문제를 새로고침하거나 다시 방문해도 유지되며 `자동 감지로 되돌리기`를 눌러야 해제됩니다.
 6. 문제 사이트에서 코드를 제출해 Accepted를 받습니다. 제출 시점에 캡처한 코드는 Accepted가 10분 안에 확인된 경우에만 동기화 큐에 들어갑니다.
 7. 팝업에서 동기화 단계와 결과를 확인합니다. 성공한 코드는 GitHub의 날짜별 브랜치와 Draft PR에 누적되고 로컬 미동기화 큐에서는 제거됩니다.
-8. 네트워크나 카탈로그 문제로 실패했다면 오류를 수정한 뒤 `다시 동기화`를 누릅니다.
+8. 네트워크나 문제 감지 오류로 실패했다면 오류를 수정한 뒤 `다시 동기화`를 누릅니다.
 
 같은 문제를 다른 문제 번호로 다시 동기화하려면 현재 문제 번호를 수정한 뒤 다시 Accepted 제출해야 합니다. 이미 GitHub에 올라간 이전 번호의 파일은 자동으로 삭제되지 않습니다.
 
@@ -75,13 +75,14 @@ unzip -t artifacts/leetdash-extension.zip
 ## 동작
 
 - 제출 버튼 또는 `Ctrl/Cmd+Enter` 시점의 코드와 언어를 캡처하고 10분 안에 Accepted 결과가 나타날 때만 큐에 넣습니다.
-- GitHub 계정은 중앙 [`whoisyourbias/leetdash`의 `data/users.json`](https://github.com/whoisyourbias/leetdash/blob/master/data/users.json)에 등록되어 있어야 하며, 문제는 같은 저장소의 `data/problem-catalog.json`에 존재해야 합니다.
+- GitHub 계정은 중앙 [`whoisyourbias/leetdash`의 `data/users.json`](https://github.com/whoisyourbias/leetdash/blob/master/data/users.json)에 등록되어 있어야 합니다. LeetCode와 Programmers 문제는 중앙 `data/problem-catalog.json`에 존재해야 하지만, SWEA는 화면에서 1~8자리 문제 번호를 확인할 수 있으면 미등록 문제도 즉시 제출합니다.
 - 경로는 provider별 canonical source인 `leetcode`, `programmers`, `swea`를 사용합니다.
-- 팝업의 `현재 열린 문제`에는 제출 전부터 자동 감지된 provider와 문제 번호가 표시됩니다. 이를 수정하면 중앙 카탈로그 검증을 통과한 값이 문제 화면별 `problemOverride`로 저장되며, 같은 화면의 기존 `pending` 또는 `blocked` 제출에도 즉시 반영됩니다.
+- 팝업의 `현재 열린 문제`에는 제출 전부터 자동 감지된 provider와 문제 번호가 표시됩니다. 이를 수정하면 유효한 값이 문제 화면별 `problemOverride`로 저장되며, 같은 화면의 기존 `pending` 또는 `blocked` 제출에도 즉시 반영됩니다. 미등록 문제 번호의 수동 보정은 SWEA에서만 허용합니다.
 - 사용자가 한 번 저장한 `problemOverride`는 같은 문제의 새로고침·재방문·재제출에서 유지되고 자동 재감지, 중복 Accepted 캡처, 재시도보다 항상 우선합니다. 팝업에서 명시적으로 `자동 감지로 되돌리기`를 선택해야만 제거됩니다.
 - 일반 참가자는 fork가 없으면 `<githubUsername>/leetdash`를 자동 생성합니다. 원본 저장소 소유자는 fork 대신 `submissions/<githubUsername>/YYMMDD` upstream branch를 사용하되 항상 Draft PR을 거칩니다.
 - Accepted 시각의 Asia/Seoul 날짜 `YYMMDD`를 branch와 Draft PR 제목으로 사용합니다.
 - 같은 문제를 다른 언어로 다시 통과하면 기존 `Solution.*`를 제거하고 최신 코드를 한 커밋으로 기록합니다.
+- 미등록 SWEA 문제는 풀이와 함께 `meta.json`을 같은 커밋에 기록합니다. 메타에는 Accepted 시각, 언어, 문제 번호, 화면에서 읽은 제목·난이도와 공개 SWEA URL이 포함되며 소스 코드는 포함되지 않습니다. 제목이나 난이도를 읽지 못하면 각각 `SWEA <문제번호>`, `Unknown`을 사용합니다.
 - 기본 설정에서는 KST 자정 이후 미동기화 큐가 없으면 Draft를 Ready로 바꿉니다. 팝업의 `자정 이후 자동 Ready 전환`을 끄면 Draft를 그대로 유지하며, 다시 켜면 다음 동기화에서 지난 날짜 Draft를 처리합니다. Chrome이 꺼져 있었다면 다음 시작이나 15분 주기 복구 작업에서 처리합니다.
 
 팝업의 `다시 동기화`는 네트워크 실패뿐 아니라 카탈로그 갱신 후 보류된 제출도 다시 검사합니다. 이미 Ready/closed/merged된 날짜 branch에는 새 커밋을 만들지 않고 확인 필요 상태로 남깁니다.

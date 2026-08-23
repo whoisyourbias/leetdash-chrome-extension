@@ -49,6 +49,50 @@ describe("platform catalog resolution", () => {
     )).toMatchObject({ sourceKey: "swea", submissionKey: "1204" });
   });
 
+  it("creates a dynamic SWEA target when a numeric page hint is missing from the catalog", () => {
+    expect(resolveCatalogProblem(
+      catalog,
+      "swea",
+      "https://swexpertacademy.com/main/code/problem/problemDetail.do?contestProbId=dynamic&session=drop-me#result",
+      "76543210",
+      undefined,
+      "76543210. 사용자 정의 문제 | SW Expert Academy",
+      "D5",
+    )).toEqual({
+      sourceKey: "swea",
+      submissionKey: "76543210",
+      origin: "page",
+      problem: {
+        provider: "swea",
+        problemId: "76543210",
+        problemKey: "swea:76543210",
+        title: "사용자 정의 문제",
+        difficulty: "D5",
+        sourceUrl: "https://swexpertacademy.com/main/code/problem/problemDetail.do?contestProbId=dynamic",
+      },
+    });
+  });
+
+  it("uses safe fallback metadata for a manually corrected dynamic SWEA problem", () => {
+    expect(resolveCatalogProblem(
+      catalog,
+      "leetcode",
+      "https://leetcode.com/problems/two-sum/",
+      undefined,
+      { provider: "swea", problemId: "76543210" },
+      "76543210. 새 문제",
+    )).toMatchObject({
+      sourceKey: "swea",
+      origin: "page",
+      problem: {
+        problemId: "76543210",
+        title: "새 문제",
+        difficulty: "Unknown",
+        sourceUrl: "https://swexpertacademy.com/main/code/problem/problemDetail.do?problemId=76543210",
+      },
+    });
+  });
+
   it("uses a validated manual provider and problem number instead of the detected URL", () => {
     expect(resolveCatalogProblem(
       catalog,

@@ -196,6 +196,7 @@ export class GitHubClient {
     directory,
     extension,
     code,
+    meta,
     message,
     onProgress,
   }: {
@@ -204,6 +205,7 @@ export class GitHubClient {
     directory: string;
     extension: string;
     code: string;
+    meta?: string;
     message: string;
     onProgress?: OperationProgress;
   }): Promise<{ changed: boolean; sha: string }> {
@@ -223,15 +225,24 @@ export class GitHubClient {
           && !entry.path.slice(prefix.length).includes("/")
           && isSolutionFilename(entry.path.slice(prefix.length));
       });
+      const existingMeta = (tree.tree as any[]).find((entry) => (
+        entry.type === "blob" && entry.path === `${directory}/meta.json`
+      ));
       const solutionPath = `${directory}/Solution.${extension}`;
       await onProgress?.("제출 코드를 GitHub blob으로 준비하는 중입니다.");
       const blob = await this.request<any>("POST", `/repos/${fork}/git/blobs`, {
         body: { content: encodeBase64Utf8(code), encoding: "base64" },
       });
+      const metaBlob = meta === undefined
+        ? undefined
+        : await this.request<any>("POST", `/repos/${fork}/git/blobs`, {
+          body: { content: encodeBase64Utf8(meta), encoding: "base64" },
+        });
       if (
         existingSolutions.length === 1
         && existingSolutions[0].path === solutionPath
         && existingSolutions[0].sha === blob.sha
+        && (!metaBlob || existingMeta?.sha === metaBlob.sha)
       ) {
         await onProgress?.("동일한 풀이가 이미 브랜치에 반영되어 있습니다.");
         return { changed: false, sha: parentSha };
@@ -240,6 +251,9 @@ export class GitHubClient {
         .filter((entry) => entry.path !== solutionPath)
         .map((entry) => ({ path: entry.path, mode: "100644", type: "blob", sha: null }));
       entries.push({ path: solutionPath, mode: "100644", type: "blob", sha: blob.sha });
+      if (metaBlob) {
+        entries.push({ path: `${directory}/meta.json`, mode: "100644", type: "blob", sha: metaBlob.sha });
+      }
       await onProgress?.("풀이 파일 변경 트리를 생성하는 중입니다.");
       const nextTree = await this.request<any>("POST", `/repos/${fork}/git/trees`, {
         body: { base_tree: commit.tree.sha, tree: entries },
