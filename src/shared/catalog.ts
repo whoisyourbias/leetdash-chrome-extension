@@ -11,6 +11,51 @@ function numericProblemId(value: string | null | undefined): string | undefined 
   return match?.[1];
 }
 
+function dynamicSweaTitle(problemId: string, value: string | undefined): string {
+  const normalized = (value ?? "")
+    .replace(new RegExp(`^\\s*${problemId}\\s*\\.\\s*`), "")
+    .replace(/\s*[|\-]\s*SW Expert Academy\s*$/i, "")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  return normalized && normalized.length <= 200 && !/[\u0000-\u001f\u007f]/.test(normalized)
+    ? normalized
+    : `SWEA ${problemId}`;
+}
+
+function dynamicSweaDifficulty(value: string | undefined): string {
+  const normalized = value?.trim();
+  return /^(?:D[1-8]|Attack)$/.test(normalized ?? "") ? normalized! : "Unknown";
+}
+
+function dynamicSweaSourceUrl(pageUrl: string, problemId: string): string {
+  try {
+    const parsed = new URL(pageUrl);
+    if (
+      parsed.protocol === "https:"
+      && !parsed.username
+      && !parsed.password
+      && ["swexpertacademy.com", "www.swexpertacademy.com"].includes(parsed.hostname)
+    ) {
+      const normalized = new URL(`${parsed.origin}${parsed.pathname}`);
+      for (const key of ["problemId", "problemTitle", "contestProbId"]) {
+        const value = parsed.searchParams.get(key);
+        if (value) normalized.searchParams.set(key, value);
+      }
+      return normalized.href;
+    }
+  } catch {
+    // Fall through to a stable numeric SWEA URL.
+  }
+  return `https://swexpertacademy.com/main/code/problem/problemDetail.do?problemId=${problemId}`;
+}
+
+export type ResolvedCatalogProblem = {
+  sourceKey: string;
+  submissionKey: string;
+  problem: CatalogProblem;
+  origin: "catalog" | "page";
+};
+
 function locator(
   provider: Provider,
   pageUrl: string,
@@ -38,7 +83,10 @@ export function resolveCatalogProblem(
   pageUrl: string,
   problemIdHint?: string,
   override?: { provider: Provider; problemId: string },
-): { sourceKey: string; submissionKey: string; problem: CatalogProblem } | undefined {
+  problemTitleHint?: string,
+  problemDifficultyHint?: string,
+  problemSourceUrlHint?: string,
+): ResolvedCatalogProblem | undefined {
   if (!Array.isArray(catalog?.lists)) return undefined;
   const effectiveProvider = override?.provider ?? provider;
   const list = catalog.lists.find((candidate) => candidate.key === canonicalSource[effectiveProvider]);
@@ -50,10 +98,26 @@ export function resolveCatalogProblem(
     candidate.provider === effectiveProvider
       && (pageLocator.problemId ? candidate.problemId === pageLocator.problemId : candidate.slug === pageLocator.slug)
   ));
-  if (!problem) return undefined;
-  const item = list.items.find((candidate) => candidate.problemKey === problem.problemKey);
-  if (!item) return undefined;
-  return { sourceKey: list.key, submissionKey: item.submissionKey, problem };
+  if (problem) {
+    const item = list.items.find((candidate) => candidate.problemKey === problem.problemKey);
+    if (!item) return undefined;
+    return { sourceKey: list.key, submissionKey: item.submissionKey, problem, origin: "catalog" };
+  }
+  if (effectiveProvider !== "swea" || !pageLocator.problemId) return undefined;
+  const problemId = pageLocator.problemId;
+  return {
+    sourceKey: "swea",
+    submissionKey: problemId,
+    problem: {
+      provider: "swea",
+      problemId,
+      problemKey: `swea:${problemId}`,
+      title: dynamicSweaTitle(problemId, problemTitleHint),
+      difficulty: dynamicSweaDifficulty(problemDifficultyHint),
+      sourceUrl: dynamicSweaSourceUrl(problemSourceUrlHint ?? pageUrl, problemId),
+    },
+    origin: "page",
+  };
 }
 
 export function isProblemCatalog(value: unknown): value is ProblemCatalog {

@@ -110,6 +110,7 @@ export function createProblemOverride(
     detected.pageUrl,
     detected.problemIdHint,
     { provider, problemId: normalizedProblemId },
+    detected.problemTitleHint,
   );
   if (!resolved) throw new Error(`${provider} ${normalizedProblemId} 문제를 leetdash 카탈로그에서 찾지 못했습니다.`);
   return {
@@ -329,6 +330,24 @@ function safeSubmissionsPath(value: string): string | undefined {
   return normalized;
 }
 
+export function buildDynamicProblemMeta(
+  item: SubmissionQueueItem,
+  problem: { provider: Provider; problemId: string; title: string; difficulty?: string; sourceUrl: string },
+): string {
+  return `${JSON.stringify({
+    status: "solved",
+    language: item.language,
+    solvedAt: item.acceptedAt,
+    problem: {
+      provider: "swea",
+      problemId: problem.problemId,
+      title: problem.title,
+      difficulty: problem.difficulty ?? "Unknown",
+      sourceUrl: problem.sourceUrl,
+    },
+  }, null, 2)}\n`;
+}
+
 async function syncItem(
   item: SubmissionQueueItem,
   auth: AuthState,
@@ -353,6 +372,9 @@ async function syncItem(
     item.pageUrl,
     item.problemIdHint,
     item.problemOverride,
+    item.problemOverride?.problemTitle ?? item.pageTitle,
+    item.problemDifficultyHint,
+    item.problemSourceUrlHint,
   );
   if (!resolved) throw new GitHubError("현재 문제를 leetdash 카탈로그에서 찾지 못했습니다.", 422);
   const extension = languageExtension(item.language);
@@ -382,6 +404,7 @@ async function syncItem(
     directory,
     extension,
     code: item.code,
+    meta: resolved.origin === "page" ? buildDynamicProblemMeta(item, resolved.problem) : undefined,
     message: `solve: ${resolved.problem.provider} ${resolved.problem.problemId}`,
     onProgress: (message) => report("commit", message),
   });

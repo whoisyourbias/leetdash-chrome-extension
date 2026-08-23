@@ -19,6 +19,8 @@ export interface PendingAttempt extends EditorSnapshot {
   id: string;
   provider: Provider;
   problemIdHint?: string;
+  problemDifficultyHint?: string;
+  problemSourceUrlHint?: string;
   problemContextKey?: string;
   problemOverride?: ProblemOverride;
   pageTitle: string;
@@ -124,6 +126,15 @@ export interface CatalogProblem {
   problemKey: string;
   slug?: string;
   title: string;
+  difficulty?: string;
+  sourceUrl: string;
+}
+
+export interface ProblemSnapshot {
+  provider: "swea";
+  problemId: string;
+  title: string;
+  difficulty: string;
   sourceUrl: string;
 }
 

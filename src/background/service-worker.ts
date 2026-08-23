@@ -151,7 +151,12 @@ function readEditorSnapshot(provider: Provider): EditorSnapshot {
   return { code, language };
 }
 
-function readSweaProblemMetadata(): { problemIdHint?: string; pageTitle?: string; pageUrl?: string } {
+function readSweaProblemMetadata(): {
+  problemIdHint?: string;
+  problemDifficultyHint?: string;
+  pageTitle?: string;
+  pageUrl?: string;
+} {
   const documents: Document[] = [document];
   try {
     if (window.top?.document && window.top.document !== document) documents.unshift(window.top.document);
@@ -164,12 +169,30 @@ function readSweaProblemMetadata(): { problemIdHint?: string; pageTitle?: string
   } catch {
     // Cross-origin frames can only inspect their own URL.
   }
+  let urlProblemId: string | undefined;
+  let urlProblemUrl: URL | undefined;
   for (const pageUrl of urls) {
     const value = pageUrl.searchParams.get("problemId") ?? pageUrl.searchParams.get("problemTitle");
     const match = /^\s*(\d{1,8})(?:\s*\.|\s|$)/.exec(value ?? "");
-    if (match) return { problemIdHint: match[1], pageUrl: pageUrl.href };
+    if (match && !urlProblemId) {
+      urlProblemId = match[1];
+      urlProblemUrl = pageUrl;
+    }
   }
-  const contextUrl = urls.find((pageUrl) => pageUrl.searchParams.has("contestProbId") || pageUrl.searchParams.has("problemId")) ?? urls[0];
+  const contextUrl = urlProblemUrl
+    ?? urls.find((pageUrl) => pageUrl.searchParams.has("contestProbId") || pageUrl.searchParams.has("problemId"))
+    ?? urls[0];
+  let problemDifficultyHint: string | undefined;
+  for (const pageDocument of documents) {
+    for (const element of pageDocument.querySelectorAll("[class*='badgeC-d'], [class*='difficulty']")) {
+      const marker = `${element.className} ${element.textContent ?? ""}`;
+      const level = /(?:badgeC-d|\bD)([1-8])\b/i.exec(marker);
+      if (level) problemDifficultyHint = `D${level[1]}`;
+      else if (/\bAttack\b/i.test(marker)) problemDifficultyHint = "Attack";
+      if (problemDifficultyHint) break;
+    }
+    if (problemDifficultyHint) break;
+  }
   const selectors = [
     "h1, h2, h3, h4",
     "[class*='problem'] [class*='title']",
@@ -183,14 +206,19 @@ function readSweaProblemMetadata(): { problemIdHint?: string; pageTitle?: string
       for (const element of pageDocument.querySelectorAll(selector)) {
         for (const line of (element.textContent ?? "").split(/\r?\n/)) {
           const match = /^\s*(\d{3,8})\s*\.\s*\S/.exec(line);
-          if (match) return { problemIdHint: match[1], pageTitle: line.trim(), pageUrl: contextUrl.href };
+          if (match) return { problemIdHint: match[1], problemDifficultyHint, pageTitle: line.trim(), pageUrl: contextUrl.href };
         }
       }
     }
     const bodyMatch = /(?:^|\n)\s*(\d{3,8})\s*\.\s*([^\n]+)/m.exec(pageDocument.body?.innerText ?? "");
-    if (bodyMatch) return { problemIdHint: bodyMatch[1], pageTitle: `${bodyMatch[1]}. ${bodyMatch[2].trim()}`, pageUrl: contextUrl.href };
+    if (bodyMatch) return { problemIdHint: bodyMatch[1], problemDifficultyHint, pageTitle: `${bodyMatch[1]}. ${bodyMatch[2].trim()}`, pageUrl: contextUrl.href };
   }
-  return { pageUrl: contextUrl.href };
+  return {
+    problemIdHint: urlProblemId,
+    problemDifficultyHint,
+    pageTitle: urlProblemId ? documents[0]?.title : undefined,
+    pageUrl: contextUrl.href,
+  };
 }
 
 async function getActiveProblem(auth: { token: string } | undefined): Promise<ActiveProblem | undefined> {
@@ -213,6 +241,7 @@ async function getActiveProblem(auth: { token: string } | undefined): Promise<Ac
       const candidates = execution.map((entry: any) => entry.result)
         .filter((result: any) => result && typeof result === "object") as Array<{
           problemIdHint?: string;
+          problemDifficultyHint?: string;
           pageTitle?: string;
           pageUrl?: string;
         }>;
@@ -249,7 +278,14 @@ async function getActiveProblem(auth: { token: string } | undefined): Promise<Ac
   if (!problemOverride && auth) {
     try {
       const catalog = await loadCatalog(new GitHubClient(auth.token));
-      const resolved = resolveCatalogProblem(catalog, provider, tab.url, detectedProblemId);
+      const resolved = resolveCatalogProblem(
+        catalog,
+        provider,
+        tab.url,
+        detectedProblemId,
+        undefined,
+        detectedProblemTitle,
+      );
       if (resolved) {
         detectedProblemId = resolved.problem.problemId;
         detectedProblemTitle = resolved.problem.title;
@@ -276,7 +312,7 @@ async function refreshProblemMetadata(item: SubmissionQueueItem): Promise<void> 
   if (item.problemOverride || item.provider !== "swea" || !Number.isInteger(item.tabId)) return;
   const hasCapturedFrame = Number.isInteger(item.frameId);
   const preferredFrame = hasCapturedFrame ? item.frameId! : 0;
-  let metadata: { problemIdHint?: string; pageTitle?: string } | undefined;
+  let metadata: { problemIdHint?: string; problemDifficultyHint?: string; pageTitle?: string; pageUrl?: string } | undefined;
   try {
     metadata = await chrome.tabs.sendMessage(
       item.tabId,
@@ -303,6 +339,8 @@ async function refreshProblemMetadata(item: SubmissionQueueItem): Promise<void> 
     }
   }
   if (typeof metadata?.problemIdHint === "string") item.problemIdHint = metadata.problemIdHint;
+  if (typeof metadata?.problemDifficultyHint === "string") item.problemDifficultyHint = metadata.problemDifficultyHint;
+  if (typeof metadata?.pageUrl === "string") item.problemSourceUrlHint = metadata.pageUrl;
   if (typeof metadata?.pageTitle === "string" && metadata.pageTitle.trim()) item.pageTitle = metadata.pageTitle.trim();
 }
 
@@ -332,6 +370,8 @@ async function captureAttempt(message: any, sender: any): Promise<any> {
     id,
     provider,
     problemIdHint: typeof message.problemIdHint === "string" ? message.problemIdHint : undefined,
+    problemDifficultyHint: typeof message.problemDifficultyHint === "string" ? message.problemDifficultyHint : undefined,
+    problemSourceUrlHint: typeof message.problemSourceUrlHint === "string" ? message.problemSourceUrlHint : undefined,
     problemContextKey: contextKey,
     problemOverride: contextKey ? overrides[contextKey] : undefined,
     pageTitle,
