@@ -14,7 +14,7 @@ import {
   storageKeys,
 } from "./storage.js";
 import { AuthSessionManager, toPublicAuthState } from "./auth-session.js";
-import { PendingWorkLock } from "./pending-work-lock.js";
+import { PendingWorkCoordinator } from "./pending-work-lock.js";
 import {
   clearActiveProblemOverride,
   clearProblemOverride,
@@ -35,7 +35,7 @@ const SYNC_ALARM = "submission-sync";
 const CLOSE_ALARM = "day-close";
 const AUTH_ALARM = "auth-poll";
 const authSessions = new AuthSessionManager();
-const pendingWorkLock = new PendingWorkLock();
+const pendingWork = new PendingWorkCoordinator();
 let synchronization: Promise<void> | undefined;
 
 async function publishSyncProgress(event: SyncProgressEvent): Promise<void> {
@@ -57,7 +57,7 @@ async function runSynchronization(): Promise<void> {
   if (synchronization) return synchronization;
   const auth = await authSessions.getActiveSession();
   if (!auth) return;
-  synchronization = pendingWorkLock.run(() => synchronize(auth, authSessions, fetch, publishSyncProgress))
+  synchronization = pendingWork.mutate(() => synchronize(auth, authSessions, fetch, publishSyncProgress))
     .catch(() => undefined)
     .finally(() => { synchronization = undefined; });
   return synchronization;
@@ -77,7 +77,7 @@ async function pollAuthentication(): Promise<void> {
         throw new Error(`${result.auth.login} 계정이 중앙 whoisyourbias/leetdash 저장소의 data/users.json에 등록되지 않았습니다.`);
       }
       await Promise.all([
-        pendingWorkLock.run(() => authSessions.acceptLogin(result.auth!)),
+        pendingWork.transition(() => authSessions.acceptLogin(result.auth!)),
         removeStored(storageKeys.deviceSession),
         chrome.alarms.clear(AUTH_ALARM),
       ]);
@@ -348,7 +348,12 @@ async function refreshProblemMetadata(item: SubmissionQueueItem): Promise<void> 
   if (typeof metadata?.pageTitle === "string" && metadata.pageTitle.trim()) item.pageTitle = metadata.pageTitle.trim();
 }
 
-async function captureAttempt(message: any, sender: any): Promise<any> {
+interface PreparedAttempt {
+  tabId: number;
+  attempt: PendingAttempt;
+}
+
+async function prepareAttempt(message: any, sender: any): Promise<PreparedAttempt> {
   const tabId = sender.tab?.id;
   const frameId = Number.isInteger(sender.frameId) ? sender.frameId : 0;
   const senderUrl = sender.tab?.url ?? sender.url;
@@ -386,10 +391,14 @@ async function captureAttempt(message: any, sender: any): Promise<any> {
     code: snapshot.code,
     language: snapshot.language || String(message.languageHint ?? ""),
   };
+  return { tabId, attempt };
+}
+
+async function storePreparedAttempt({ tabId, attempt }: PreparedAttempt): Promise<any> {
   const pending = await getPendingAttempts();
   pending[String(tabId)] = attempt;
   await setStored(storageKeys.pendingAttempts, pending);
-  return { ok: true, attemptId: id };
+  return { ok: true, attemptId: attempt.id };
 }
 
 async function acceptAttempt(sender: any): Promise<any> {
@@ -472,17 +481,20 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       await pollAuthentication();
       return publicState();
     case "auth:logout": {
-      if (!await pendingWorkLock.run(() => authSessions.logout(message.force === true))) {
+      if (!await pendingWork.transition(() => authSessions.logout(message.force === true))) {
         return { needsConfirmation: true };
       }
       return publicState();
     }
     case "capture-attempt":
-      return pendingWorkLock.run(() => captureAttempt(message, sender));
+      return pendingWork.capture(
+        () => prepareAttempt(message, sender),
+        (prepared) => storePreparedAttempt(prepared),
+      );
     case "submission-accepted":
-      return pendingWorkLock.run(() => acceptAttempt(sender));
+      return pendingWork.mutate(() => acceptAttempt(sender));
     case "queue:retry": {
-      await pendingWorkLock.run(async () => {
+      await pendingWork.mutate(async () => {
         const queue = await getPendingQueue();
         for (const item of queue) {
           if (item.status === "blocked" || item.status === "pending") {
@@ -508,7 +520,7 @@ async function handleMessage(message: any, sender: any): Promise<any> {
         throw new Error("지원하지 않는 공급자입니다.");
       }
       if (typeof message.problemId !== "string") throw new Error("문제 번호가 올바르지 않습니다.");
-      await pendingWorkLock.run(() => saveProblemOverride(
+      await pendingWork.mutate(() => saveProblemOverride(
         auth,
         message.itemId,
         message.provider as Provider,
@@ -520,7 +532,7 @@ async function handleMessage(message: any, sender: any): Promise<any> {
     }
     case "queue:problem-override:clear": {
       if (typeof message.itemId !== "string") throw new Error("수정할 제출 정보가 올바르지 않습니다.");
-      await pendingWorkLock.run(() => clearProblemOverride(message.itemId));
+      await pendingWork.mutate(() => clearProblemOverride(message.itemId));
       await runSynchronization();
       return publicState();
     }
@@ -537,7 +549,7 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       if (!activeProblem || activeProblem.contextKey !== message.contextKey) {
         throw new Error("현재 열린 문제가 변경되었습니다. 팝업을 다시 열어 확인하세요.");
       }
-      await pendingWorkLock.run(() => saveActiveProblemOverride(
+      await pendingWork.mutate(() => saveActiveProblemOverride(
         auth,
         activeProblem,
         message.provider as Provider,
@@ -553,7 +565,7 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       if (!activeProblem || activeProblem.contextKey !== message.contextKey) {
         throw new Error("현재 열린 문제가 변경되었습니다. 팝업을 다시 열어 확인하세요.");
       }
-      await pendingWorkLock.run(() => clearActiveProblemOverride([
+      await pendingWork.mutate(() => clearActiveProblemOverride([
         activeProblem.contextKey,
         ...activeProblem.contextAliases,
       ]));
