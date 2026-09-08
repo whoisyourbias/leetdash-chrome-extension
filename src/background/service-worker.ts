@@ -8,6 +8,7 @@ import {
   getSettings,
   getSyncActivity,
   getSyncHistory,
+  hasPendingSourceWork,
   removeStored,
   setStored,
   storageKeys,
@@ -445,7 +446,7 @@ async function publicState(): Promise<any> {
     ...publicAuth,
     deviceSession,
     queue: recentSubmissions,
-    hasPendingWork: queue.length > 0 || Object.keys(pendingAttempts).length > 0,
+    hasPendingWork: hasPendingSourceWork(queue, pendingAttempts),
     activeProblem,
     today,
     todayPull,
@@ -469,18 +470,7 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       await pollAuthentication();
       return publicState();
     case "auth:logout": {
-      const queue = await getPendingQueue();
-      if (queue.length > 0 && !message.force) return { needsConfirmation: true };
-      await Promise.all([
-        removeStored(storageKeys.auth),
-        removeStored(storageKeys.branchClaims),
-        removeStored(storageKeys.deviceSession),
-        removeStored(storageKeys.pendingAttempts),
-        removeStored(storageKeys.pullSnapshots),
-        removeStored(storageKeys.syncHistory),
-        removeStored(storageKeys.syncActivity),
-        message.force ? setStored(storageKeys.pendingQueue, []) : Promise.resolve(),
-      ]);
+      if (!await authSessions.logout(message.force === true)) return { needsConfirmation: true };
       return publicState();
     }
     case "capture-attempt":

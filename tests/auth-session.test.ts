@@ -142,6 +142,28 @@ describe("OAuth session lifecycle", () => {
     expect(stored.auth).toMatchObject({ status: "reauth_required", reason: "refresh_rejected" });
   });
 
+  it("does not let an older refresh rejection overwrite a newer login", async () => {
+    stored.auth = active({ accessTokenExpiresAt: "2026-09-08T07:55:00.000Z" });
+    let finishRefresh!: (response: Response) => void;
+    const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => { finishRefresh = resolve; }));
+    const manager = new AuthSessionManager(fetchImpl as typeof fetch);
+
+    const accessToken = manager.getAccessToken();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    stored.auth = active({
+      accessToken: "new-login-access",
+      refreshToken: "new-login-refresh",
+      accessTokenExpiresAt: "2026-09-08T15:56:00.000Z",
+    });
+    finishRefresh(new Response(JSON.stringify({ error: "bad_refresh_token" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    }));
+
+    await expect(accessToken).resolves.toBe("new-login-access");
+    expect(stored.auth).toMatchObject({ status: "active", accessToken: "new-login-access" });
+  });
+
   it("requires the same account while pending source code is preserved", async () => {
     stored.auth = {
       schemaVersion: 2,
@@ -170,5 +192,14 @@ describe("OAuth session lifecycle", () => {
     await expect(new AuthSessionManager().acceptLogin(active({ login: "grace" })))
       .rejects.toThrow("ada 계정");
     expect(stored.auth.status).toBe("reauth_required");
+  });
+
+  it("does not log out or delete a pending attempt before confirmation", async () => {
+    stored.auth = active();
+    stored.pendingAttempts = { attempt: { code: "secret" } };
+
+    await expect(new AuthSessionManager().logout(false)).resolves.toBe(false);
+    expect(stored.auth).toEqual(active());
+    expect(stored.pendingAttempts).toEqual({ attempt: { code: "secret" } });
   });
 });

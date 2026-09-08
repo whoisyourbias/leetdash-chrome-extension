@@ -1,5 +1,5 @@
 import { DeviceFlowError, refreshAccessToken } from "./auth.js";
-import { getStored, setStored, storageKeys } from "./storage.js";
+import { getStored, hasPendingSourceWork, setStored, storageKeys } from "./storage.js";
 import type { ActiveAuthSession, ReauthRequiredState, StoredAuthState } from "../shared/model.js";
 
 const refreshSkewMs = 5 * 60 * 1000;
@@ -118,9 +118,7 @@ export class AuthSessionManager {
         getStored<unknown>(storageKeys.pendingQueue, []),
         getStored<unknown>(storageKeys.pendingAttempts, {}),
       ]);
-      const hasPending = (Array.isArray(queue) && queue.length > 0)
-        || (!!attempts && typeof attempts === "object" && Object.keys(attempts).length > 0);
-      if (hasPending) {
+      if (hasPendingSourceWork(queue, attempts)) {
         throw new DeviceFlowError(
           "account_mismatch",
           `보존된 풀이를 동기화하려면 ${previous.login} 계정으로 로그인해 주세요.`,
@@ -128,6 +126,27 @@ export class AuthSessionManager {
       }
     }
     await setStored(storageKeys.auth, session);
+  }
+
+  async logout(force: boolean): Promise<boolean> {
+    const [queue, attempts] = await Promise.all([
+      getStored<unknown>(storageKeys.pendingQueue, []),
+      getStored<unknown>(storageKeys.pendingAttempts, {}),
+    ]);
+    if (hasPendingSourceWork(queue, attempts) && !force) return false;
+    await Promise.all([
+      chrome.storage.local.remove([
+        storageKeys.auth,
+        storageKeys.branchClaims,
+        storageKeys.deviceSession,
+        storageKeys.pendingAttempts,
+        storageKeys.pullSnapshots,
+        storageKeys.syncHistory,
+        storageKeys.syncActivity,
+      ]),
+      force ? setStored(storageKeys.pendingQueue, []) : Promise.resolve(),
+    ]);
+    return true;
   }
 
   private async requireActive(): Promise<ActiveAuthSession> {
@@ -152,7 +171,7 @@ export class AuthSessionManager {
         return refreshed;
       } catch (error) {
         if (error instanceof DeviceFlowError && error.code === "bad_refresh_token") {
-          await this.requireReauthentication(session, "refresh_rejected");
+          return this.requireReauthentication(session, "refresh_rejected");
         }
         throw error;
       }
@@ -163,12 +182,18 @@ export class AuthSessionManager {
   private async requireReauthentication(
     session: ActiveAuthSession,
     reason: ReauthRequiredState["reason"],
-  ): Promise<never> {
+  ): Promise<ActiveAuthSession> {
+    const latest = await this.getState();
+    if (latest?.status === "active" && (
+      latest.accessToken !== session.accessToken || latest.refreshToken !== session.refreshToken
+    )) return latest;
+    if (latest?.status === "reauth_required") throw new ReauthenticationRequiredError(latest);
+    if (latest?.status !== "active") throw new Error("GitHub 로그인이 필요합니다.");
     const state: ReauthRequiredState = {
       schemaVersion: 2,
       status: "reauth_required",
-      login: session.login,
-      avatarUrl: session.avatarUrl,
+      login: latest.login,
+      avatarUrl: latest.avatarUrl,
       reason,
     };
     await Promise.all([setStored(storageKeys.auth, state), clearAccountCaches()]);

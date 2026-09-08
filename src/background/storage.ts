@@ -42,6 +42,11 @@ export async function removeStored(key: string): Promise<void> {
   await chrome.storage.local.remove(key);
 }
 
+export function hasPendingSourceWork(queue: unknown, attempts: unknown): boolean {
+  return (Array.isArray(queue) && queue.length > 0)
+    || (!!attempts && typeof attempts === "object" && Object.keys(attempts).length > 0);
+}
+
 export const getAuth = () => getStored<StoredAuthState | undefined>(storageKeys.auth, undefined);
 export const getBranchClaims = () => getStored<Record<string, string>>(storageKeys.branchClaims, {});
 export const getCatalogCache = () => getStored<CatalogCache | undefined>(storageKeys.catalog, undefined);
