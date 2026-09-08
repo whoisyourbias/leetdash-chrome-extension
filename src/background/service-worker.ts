@@ -492,7 +492,7 @@ async function handleMessage(message: any, sender: any): Promise<any> {
         (prepared) => storePreparedAttempt(prepared),
       );
     case "submission-accepted":
-      return pendingWork.mutate(() => acceptAttempt(sender));
+      return pendingWork.transition(() => acceptAttempt(sender));
     case "queue:retry": {
       await pendingWork.mutate(async () => {
         const queue = await getPendingQueue();

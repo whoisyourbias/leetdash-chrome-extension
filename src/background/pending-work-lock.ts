@@ -10,7 +10,7 @@ export class PendingWorkLock {
 
 export class PendingWorkCoordinator {
   private readonly mutationLock = new PendingWorkLock();
-  private readonly captureLock = new PendingWorkLock();
+  private readonly captures = new Set<Promise<unknown>>();
 
   mutate<T>(operation: () => Promise<T>): Promise<T> {
     return this.mutationLock.run(operation);
@@ -20,13 +20,20 @@ export class PendingWorkCoordinator {
     prepare: () => Promise<Prepared>,
     commit: (prepared: Prepared) => Promise<Result>,
   ): Promise<Result> {
-    return this.captureLock.run(async () => {
-      const prepared = await prepare();
-      return this.mutationLock.run(() => commit(prepared));
-    });
+    const capture = Promise.resolve()
+      .then(prepare)
+      .then((prepared) => this.mutationLock.run(() => commit(prepared)));
+    this.captures.add(capture);
+    void capture.then(
+      () => { this.captures.delete(capture); },
+      () => { this.captures.delete(capture); },
+    );
+    return capture;
   }
 
-  transition<T>(operation: () => Promise<T>): Promise<T> {
-    return this.captureLock.run(() => this.mutationLock.run(operation));
+  async transition<T>(operation: () => Promise<T>): Promise<T> {
+    const admittedCaptures = [...this.captures];
+    await Promise.allSettled(admittedCaptures);
+    return this.mutationLock.run(operation);
   }
 }

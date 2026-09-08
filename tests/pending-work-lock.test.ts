@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { PendingWorkCoordinator } from "../src/background/pending-work-lock";
 
 describe("pending work mutation serialization", () => {
-  it("reads a submission during sync, stores it afterward, then lets a transition inspect", async () => {
+  it("stores an admitted capture before processing its immediate acceptance", async () => {
     const coordinator = new PendingWorkCoordinator();
     const order: string[] = [];
     let finishSync!: () => void;
@@ -21,20 +21,54 @@ describe("pending work mutation serialization", () => {
       },
       async (source) => { order.push(`stored:${source}`); },
     );
-    const transition = coordinator.transition(async () => {
-      order.push("transition-inspected");
+    const acceptance = coordinator.transition(async () => {
+      order.push("acceptance-inspected");
     });
     await Promise.resolve();
 
     expect(order).toEqual(["sync-start", "editor-read"]);
     finishSync();
-    await Promise.all([sync, capture, transition]);
+    await Promise.all([sync, capture, acceptance]);
     expect(order).toEqual([
       "sync-start",
       "editor-read",
       "sync-finish",
       "stored:captured-source",
-      "transition-inspected",
+      "acceptance-inspected",
+    ]);
+  });
+
+  it("starts multiple editor reads immediately while sync is still running", async () => {
+    const coordinator = new PendingWorkCoordinator();
+    const order: string[] = [];
+    let finishSync!: () => void;
+    const syncGate = new Promise<void>((resolve) => { finishSync = resolve; });
+
+    const sync = coordinator.mutate(async () => {
+      order.push("sync-start");
+      await syncGate;
+      order.push("sync-finish");
+    });
+    const first = coordinator.capture(
+      async () => { order.push("editor-read:first"); return "first"; },
+      async (source) => { order.push(`stored:${source}`); },
+    );
+    const second = coordinator.capture(
+      async () => { order.push("editor-read:second"); return "second"; },
+      async (source) => { order.push(`stored:${source}`); },
+    );
+    await Promise.resolve();
+
+    expect(order).toEqual(["sync-start", "editor-read:first", "editor-read:second"]);
+    finishSync();
+    await Promise.all([sync, first, second]);
+    expect(order).toEqual([
+      "sync-start",
+      "editor-read:first",
+      "editor-read:second",
+      "sync-finish",
+      "stored:first",
+      "stored:second",
     ]);
   });
 });
