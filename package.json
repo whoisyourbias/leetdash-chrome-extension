@@ -1,6 +1,6 @@
 {
   "name": "leetdash-chrome-extension",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "description": "Accepted solutions to a daily Leetdash Draft PR",
   "license": "MIT",
@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "@types/node": "26.1.1",
+    "fflate": "^0.8.2",
     "typescript": "5.9.3",
     "vitest": "3.2.7"
   }
