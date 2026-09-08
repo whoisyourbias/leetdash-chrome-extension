@@ -71,4 +71,24 @@ describe("pending work mutation serialization", () => {
       "stored:second",
     ]);
   });
+
+  it("commits captures on the correct side of an intervening transition", async () => {
+    const coordinator = new PendingWorkCoordinator();
+    const order: string[] = [];
+
+    const first = coordinator.capture(
+      async () => "first",
+      async (source) => { order.push(`stored:${source}`); },
+    );
+    const transition = coordinator.transition(async () => {
+      order.push("transition");
+    });
+    const second = coordinator.capture(
+      async () => "second",
+      async (source) => { order.push(`stored:${source}`); },
+    );
+
+    await Promise.all([first, transition, second]);
+    expect(order).toEqual(["stored:first", "transition", "stored:second"]);
+  });
 });

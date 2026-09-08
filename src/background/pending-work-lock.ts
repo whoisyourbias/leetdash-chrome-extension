@@ -11,6 +11,7 @@ export class PendingWorkLock {
 export class PendingWorkCoordinator {
   private readonly mutationLock = new PendingWorkLock();
   private readonly captures = new Set<Promise<unknown>>();
+  private transitionBarrier: Promise<void> = Promise.resolve();
 
   mutate<T>(operation: () => Promise<T>): Promise<T> {
     return this.mutationLock.run(operation);
@@ -20,9 +21,13 @@ export class PendingWorkCoordinator {
     prepare: () => Promise<Prepared>,
     commit: (prepared: Prepared) => Promise<Result>,
   ): Promise<Result> {
+    const precedingTransition = this.transitionBarrier;
     const capture = Promise.resolve()
       .then(prepare)
-      .then((prepared) => this.mutationLock.run(() => commit(prepared)));
+      .then(async (prepared) => {
+        await precedingTransition;
+        return this.mutationLock.run(() => commit(prepared));
+      });
     this.captures.add(capture);
     void capture.then(
       () => { this.captures.delete(capture); },
@@ -31,9 +36,21 @@ export class PendingWorkCoordinator {
     return capture;
   }
 
-  async transition<T>(operation: () => Promise<T>): Promise<T> {
+  transition<T>(operation: () => Promise<T>): Promise<T> {
     const admittedCaptures = [...this.captures];
-    await Promise.allSettled(admittedCaptures);
-    return this.mutationLock.run(operation);
+    const precedingTransition = this.transitionBarrier;
+    let releaseTransition!: () => void;
+    this.transitionBarrier = new Promise<void>((resolve) => {
+      releaseTransition = resolve;
+    });
+    return (async () => {
+      try {
+        await precedingTransition;
+        await Promise.allSettled(admittedCaptures);
+        return await this.mutationLock.run(operation);
+      } finally {
+        releaseTransition();
+      }
+    })();
   }
 }
