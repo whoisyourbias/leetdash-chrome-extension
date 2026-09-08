@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyActiveProblemOverrideToQueue, applyProblemOverride, buildDynamicProblemMeta, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
+import { applyActiveProblemOverrideToQueue, applyProblemOverride, applySyncFailure, buildDynamicProblemMeta, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
+import { ReauthenticationRequiredError } from "../src/background/auth-session";
 import type { ActiveProblem, AuthState, DailyPullRequest, PendingAttempt, ProblemCatalog, ProblemOverride, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
 
 const auth: AuthState = {
@@ -49,6 +50,28 @@ beforeEach(() => {
       }),
     } },
   };
+});
+
+describe("authentication recovery", () => {
+  it("keeps reauthentication failures immediately retryable after login", () => {
+    const item = {
+      id: "submission",
+      status: "syncing",
+      attempts: 2,
+    } as SubmissionQueueItem;
+    const error = new ReauthenticationRequiredError({
+      schemaVersion: 2,
+      status: "reauth_required",
+      login: "ada",
+      reason: "refresh_rejected",
+    });
+
+    expect(applySyncFailure(item, error, new Date("2026-09-08T08:00:00.000Z"))).toMatchObject({
+      status: "pending",
+      error: "GitHub 연결을 다시 확인해 주세요.",
+      retryAt: undefined,
+    });
+  });
 });
 
 describe("dynamic SWEA metadata", () => {

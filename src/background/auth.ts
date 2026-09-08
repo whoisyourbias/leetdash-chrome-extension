@@ -94,8 +94,8 @@ export async function refreshAccessToken(
     }),
   });
   const body = await response.json();
-  if (!response.ok) throw new DeviceFlowError("token_request_failed", "GitHub 로그인을 갱신하지 못했습니다.");
   if (body.error) throw new DeviceFlowError(body.error, "GitHub 로그인을 다시 연결해야 합니다.");
+  if (!response.ok) throw new DeviceFlowError("token_request_failed", "GitHub 로그인을 갱신하지 못했습니다.");
   return parseTokenGrant(body);
 }
 

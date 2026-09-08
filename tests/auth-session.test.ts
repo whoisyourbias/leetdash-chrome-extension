@@ -129,6 +129,19 @@ describe("OAuth session lifecycle", () => {
     });
   });
 
+  it("does not attempt to use a refresh token whose recorded expiry has passed", async () => {
+    stored.auth = active({
+      accessTokenExpiresAt: "2026-09-08T07:55:00.000Z",
+      refreshTokenExpiresAt: "2026-09-08T07:55:00.000Z",
+    });
+    const fetchImpl = vi.fn(async () => response({}));
+    const manager = new AuthSessionManager(fetchImpl as typeof fetch);
+
+    await expect(manager.getAccessToken()).rejects.toBeInstanceOf(ReauthenticationRequiredError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stored.auth).toMatchObject({ status: "reauth_required", reason: "refresh_rejected" });
+  });
+
   it("requires the same account while pending source code is preserved", async () => {
     stored.auth = {
       schemaVersion: 2,

@@ -16,6 +16,7 @@ import type {
   SyncStage,
 } from "../shared/model.js";
 import { GitHubClient, GitHubError, submissionBranch, type GitHubCredentialProvider } from "./github.js";
+import { ReauthenticationRequiredError } from "./auth-session.js";
 import {
   getCatalogCache,
   getBranchClaims,
@@ -326,6 +327,24 @@ function isBlocked(error: unknown): boolean {
   return error instanceof GitHubError && [401, 403, 404, 422].includes(error.status);
 }
 
+export function applySyncFailure(
+  item: SubmissionQueueItem,
+  error: unknown,
+  now = new Date(),
+): SubmissionQueueItem {
+  const blocked = isBlocked(error);
+  const reauthenticationRequired = error instanceof ReauthenticationRequiredError;
+  return {
+    ...item,
+    status: blocked ? "blocked" : "pending",
+    error: error instanceof Error ? error.message : "알 수 없는 동기화 오류입니다.",
+    blockReason: error instanceof GitHubError ? error.blockReason : undefined,
+    retryAt: blocked || reauthenticationRequired
+      ? undefined
+      : new Date(now.getTime() + retryDelay(item.attempts, error)).toISOString(),
+  };
+}
+
 function safeSubmissionsPath(value: string): string | undefined {
   const normalized = value.replace(/^\/+|\/+$/g, "");
   if (!normalized.startsWith("submissions/") || normalized.includes("..") || normalized.includes("\\")) return undefined;
@@ -589,14 +608,7 @@ export async function synchronize(
         message: completed.history.prUrl ? "Draft PR 업로드를 완료했습니다." : "GitHub 동기화를 완료했습니다.",
       });
     } catch (error) {
-      const attempts = queue[index].attempts;
-      queue[index] = {
-        ...queue[index],
-        status: isBlocked(error) ? "blocked" : "pending",
-        error: error instanceof Error ? error.message : "알 수 없는 동기화 오류입니다.",
-        blockReason: error instanceof GitHubError ? error.blockReason : undefined,
-        retryAt: isBlocked(error) ? undefined : new Date(Date.now() + retryDelay(attempts, error)).toISOString(),
-      };
+      queue[index] = applySyncFailure(queue[index], error);
       await setStored(storageKeys.pendingQueue, queue);
       await onProgress?.({
         itemId: current.id,

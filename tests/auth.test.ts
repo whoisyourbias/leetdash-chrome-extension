@@ -128,6 +128,16 @@ describe("GitHub Device Flow", () => {
     vi.useRealTimers();
   });
 
+  it("preserves a refresh rejection code even when the token endpoint uses an error status", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ error: "bad_refresh_token", error_description: "expired" }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    ));
+
+    await expect(refreshAccessToken("expired-refresh", fetchImpl as typeof fetch, "client-id"))
+      .rejects.toMatchObject({ code: "bad_refresh_token" });
+  });
+
   it("rejects a token when public_repo was not granted", async () => {
     const now = Date.now();
     const session = {

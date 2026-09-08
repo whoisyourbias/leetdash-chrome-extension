@@ -139,6 +139,9 @@ export class AuthSessionManager {
 
   private refresh(session: ActiveAuthSession): Promise<ActiveAuthSession> {
     if (this.refreshPromise) return this.refreshPromise;
+    if (Date.now() >= Date.parse(session.refreshTokenExpiresAt)) {
+      return this.requireReauthentication(session, "refresh_rejected");
+    }
     this.refreshPromise = (async () => {
       try {
         const tokens = await refreshAccessToken(session.refreshToken, this.fetchImpl, this.clientId);
