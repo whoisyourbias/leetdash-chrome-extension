@@ -1,5 +1,5 @@
 import { GITHUB_CLIENT_ID } from "../config.js";
-import type { AuthState, DeviceSession } from "../shared/model.js";
+import type { ActiveAuthSession, DeviceSession } from "../shared/model.js";
 
 const oauthHeaders = {
   Accept: "application/json",
@@ -27,7 +27,7 @@ export async function startDeviceFlow(
   const response = await fetchImpl("https://github.com/login/device/code", {
     method: "POST",
     headers: oauthHeaders,
-    body: new URLSearchParams({ client_id: clientId, scope: "public_repo" }),
+    body: new URLSearchParams({ client_id: clientId, scope: "public_repo offline_access" }),
   });
   const body = await response.json();
   if (!response.ok || typeof body.device_code !== "string") {
@@ -46,8 +46,57 @@ export async function startDeviceFlow(
 }
 
 export interface DevicePollResult {
-  auth?: AuthState;
+  auth?: ActiveAuthSession;
   session?: DeviceSession;
+}
+
+export interface RefreshedTokens {
+  accessToken: string;
+  accessTokenExpiresAt: string;
+  refreshToken: string;
+  refreshTokenExpiresAt: string;
+}
+
+function parseTokenGrant(body: any): RefreshedTokens {
+  if (typeof body.access_token !== "string") {
+    throw new DeviceFlowError("token_missing", "GitHub가 유효한 access token을 반환하지 않았습니다.");
+  }
+  if (typeof body.refresh_token !== "string") {
+    throw new DeviceFlowError("refresh_token_missing", "GitHub가 자동 로그인 갱신용 refresh token을 반환하지 않았습니다.");
+  }
+  const expiresIn = Number(body.expires_in);
+  const refreshExpiresIn = Number(body.refresh_token_expires_in);
+  if (!Number.isFinite(expiresIn) || expiresIn <= 0 || !Number.isFinite(refreshExpiresIn) || refreshExpiresIn <= 0) {
+    throw new DeviceFlowError("token_expiry_missing", "GitHub가 유효한 토큰 만료 정보를 반환하지 않았습니다.");
+  }
+  const now = Date.now();
+  return {
+    accessToken: body.access_token,
+    accessTokenExpiresAt: new Date(now + expiresIn * 1000).toISOString(),
+    refreshToken: body.refresh_token,
+    refreshTokenExpiresAt: new Date(now + refreshExpiresIn * 1000).toISOString(),
+  };
+}
+
+export async function refreshAccessToken(
+  refreshToken: string,
+  fetchImpl: typeof fetch = fetch,
+  clientId = GITHUB_CLIENT_ID,
+): Promise<RefreshedTokens> {
+  assertClientId(clientId);
+  const response = await fetchImpl("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: oauthHeaders,
+    body: new URLSearchParams({
+      client_id: clientId,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+  });
+  const body = await response.json();
+  if (!response.ok) throw new DeviceFlowError("token_request_failed", "GitHub 로그인을 갱신하지 못했습니다.");
+  if (body.error) throw new DeviceFlowError(body.error, "GitHub 로그인을 다시 연결해야 합니다.");
+  return parseTokenGrant(body);
 }
 
 export async function pollDeviceFlow(
@@ -92,18 +141,16 @@ export async function pollDeviceFlow(
     };
   }
   if (body.error) throw new DeviceFlowError(body.error, "GitHub 로그인이 취소되었거나 만료되었습니다.");
-  if (typeof body.access_token !== "string") {
-    throw new DeviceFlowError("token_missing", "GitHub가 유효한 access token을 반환하지 않았습니다.");
-  }
   const scopes = String(body.scope ?? "").split(",").map((scope) => scope.trim());
   if (!scopes.includes("public_repo")) {
     throw new DeviceFlowError("scope_missing", "GitHub public_repo 권한이 승인되지 않았습니다.");
   }
+  const tokens = parseTokenGrant(body);
 
   const userResponse = await fetchImpl("https://api.github.com/user", {
     headers: {
       Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${body.access_token}`,
+      Authorization: `Bearer ${tokens.accessToken}`,
       "X-GitHub-Api-Version": "2022-11-28",
     },
   });
@@ -113,7 +160,9 @@ export async function pollDeviceFlow(
   }
   return {
     auth: {
-      token: body.access_token,
+      schemaVersion: 2,
+      status: "active",
+      ...tokens,
       login: user.login,
       avatarUrl: typeof user.avatar_url === "string" ? user.avatar_url : undefined,
     },

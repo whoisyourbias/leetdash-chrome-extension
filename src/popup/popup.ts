@@ -1,5 +1,9 @@
+import { buildReauthPrompt } from "./auth-state.js";
+
 interface PopupState {
   auth?: { login: string; avatarUrl?: string };
+  reauthRequired?: { login: string; reason: "upgrade" | "refresh_rejected" | "unauthorized" };
+  hasPendingWork: boolean;
   deviceSession?: {
     userCode: string;
     verificationUri: string;
@@ -422,7 +426,14 @@ function render(state: PopupState): void {
 
   if (!state.auth) {
     const intro = element("p", "intro");
-    intro.textContent = "GitHub에 로그인하면 LeetCode, Programmers, SWEA의 Accepted 풀이를 날짜별 Draft PR에 자동으로 올립니다.";
+    if (state.reauthRequired) {
+      const prompt = buildReauthPrompt(state.reauthRequired, state.hasPendingWork);
+      const heading = element("strong");
+      heading.textContent = prompt.title;
+      intro.append(heading, document.createTextNode(prompt.message));
+    } else {
+      intro.textContent = "GitHub에 로그인하면 LeetCode, Programmers, SWEA의 Accepted 풀이를 날짜별 Draft PR에 자동으로 올립니다.";
+    }
     app.append(intro);
     const registration = element("section", "registration-card");
     const registrationTitle = element("strong");
@@ -451,7 +462,13 @@ function render(state: PopupState): void {
         pollingTimer = window.setInterval(async () => render(await send("auth:poll")), 5000);
       }
     } else {
-      app.append(button("GitHub 로그인", async () => render(await send("auth:start"))));
+      app.append(button(state.reauthRequired ? "GitHub 다시 로그인" : "GitHub 로그인", async () => render(await send("auth:start"))));
+    }
+    if (state.reauthRequired && state.hasPendingWork) {
+      app.append(button("로컬 작업 삭제 후 다른 계정 사용", async () => {
+        if (!window.confirm("미동기화 코드가 삭제됩니다. 다른 GitHub 계정으로 전환할까요?")) return;
+        render(await send("auth:logout", { force: true }));
+      }, "link-button"));
     }
     return;
   }

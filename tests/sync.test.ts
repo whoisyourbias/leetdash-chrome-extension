@@ -3,7 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applyActiveProblemOverrideToQueue, applyProblemOverride, buildDynamicProblemMeta, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
 import type { ActiveProblem, AuthState, DailyPullRequest, PendingAttempt, ProblemCatalog, ProblemOverride, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
 
-const auth: AuthState = { login: "ada", token: "token" };
+const auth: AuthState = {
+  schemaVersion: 2,
+  status: "active",
+  accessToken: "token",
+  accessTokenExpiresAt: "2026-09-08T08:00:00.000Z",
+  refreshToken: "refresh-token",
+  refreshTokenExpiresAt: "2027-03-11T00:00:00.000Z",
+  login: "ada",
+};
 const record: DailyPullRequest = {
   date: "2026-08-16",
   compactDate: "260816",

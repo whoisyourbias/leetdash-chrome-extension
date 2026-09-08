@@ -15,7 +15,7 @@ import type {
   SyncHistoryItem,
   SyncStage,
 } from "../shared/model.js";
-import { GitHubClient, GitHubError, submissionBranch } from "./github.js";
+import { GitHubClient, GitHubError, submissionBranch, type GitHubCredentialProvider } from "./github.js";
 import {
   getCatalogCache,
   getBranchClaims,
@@ -156,13 +156,14 @@ export async function saveProblemOverride(
   itemId: string,
   provider: Provider,
   problemId: string,
+  credentials: string | GitHubCredentialProvider = auth.accessToken,
   fetchImpl: typeof fetch = fetch,
 ): Promise<SubmissionQueueItem> {
   let queue = await getPendingQueue();
   let index = queue.findIndex((item) => item.id === itemId);
   if (index < 0) throw new Error("수정할 미동기화 제출을 찾지 못했습니다.");
   if (queue[index].status === "syncing") throw new Error("업로드 중인 제출은 문제 정보를 수정할 수 없습니다.");
-  const catalog = await loadCatalog(new GitHubClient(auth.token, fetchImpl));
+  const catalog = await loadCatalog(new GitHubClient(credentials, fetchImpl));
   queue = await getPendingQueue();
   index = queue.findIndex((item) => item.id === itemId);
   if (index < 0) throw new Error("문제 정보를 확인하는 동안 제출 동기화가 완료되었습니다.");
@@ -228,9 +229,10 @@ export async function saveActiveProblemOverride(
   activeProblem: ActiveProblem,
   provider: Provider,
   problemId: string,
+  credentials: string | GitHubCredentialProvider = auth.accessToken,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ProblemOverride> {
-  const catalog = await loadCatalog(new GitHubClient(auth.token, fetchImpl));
+  const catalog = await loadCatalog(new GitHubClient(credentials, fetchImpl));
   const problemOverride = createProblemOverride(
     catalog,
     {
@@ -535,10 +537,11 @@ export function moveCompletedToHistory(
 
 export async function synchronize(
   auth: AuthState,
+  credentials: string | GitHubCredentialProvider = auth.accessToken,
   fetchImpl: typeof fetch = fetch,
   onProgress?: (event: SyncProgressEvent) => void | Promise<void>,
 ): Promise<void> {
-  const client = new GitHubClient(auth.token, fetchImpl);
+  const client = new GitHubClient(credentials, fetchImpl);
   const [queue, history, pullSnapshots, settings] = await Promise.all([
     getPendingQueue(), getSyncHistory(), getPullSnapshots(), getSettings(),
   ]);
