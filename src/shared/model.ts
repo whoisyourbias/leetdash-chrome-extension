@@ -92,11 +92,27 @@ export interface SyncHistoryItem extends Omit<SubmissionQueueItem, "code" | "sta
   syncedAt: string;
 }
 
-export interface AuthState {
-  token: string;
+export interface ActiveAuthSession {
+  schemaVersion: 2;
+  status: "active";
+  accessToken: string;
+  accessTokenExpiresAt: string;
+  refreshToken: string;
+  refreshTokenExpiresAt: string;
   login: string;
   avatarUrl?: string;
 }
+
+export interface ReauthRequiredState {
+  schemaVersion: 2;
+  status: "reauth_required";
+  login: string;
+  avatarUrl?: string;
+  reason: "upgrade" | "refresh_rejected" | "unauthorized";
+}
+
+export type StoredAuthState = ActiveAuthSession | ReauthRequiredState;
+export type AuthState = ActiveAuthSession;
 
 export interface DeviceSession {
   deviceCode: string;

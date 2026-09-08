@@ -48,7 +48,7 @@ GitHub Release의 ZIP으로 설치할 때는 먼저 압축을 푼 다음, 압축
 
 같은 문제를 다른 문제 번호로 다시 동기화하려면 현재 문제 번호를 수정한 뒤 다시 Accepted 제출해야 합니다. 이미 GitHub에 올라간 이전 번호의 파일은 자동으로 삭제되지 않습니다.
 
-OAuth token은 `chrome.storage.local`의 service worker 영역에 저장됩니다. 미동기화 코드는 `pendingQueue`에만 임시 보관하고, 완료 기록은 코드 본문 없이 `syncHistory`에 최대 100개 저장합니다. 로그아웃할 때 미동기화 코드가 있으면 삭제 여부를 먼저 확인합니다. 자세한 데이터 처리 범위는 [개인정보 안내](PRIVACY.md)를 확인하세요.
+OAuth access token과 자동 갱신용 refresh token은 `chrome.storage.local`의 service worker 영역에 저장됩니다. access token은 만료 전에 자동으로 교체되며, refresh token이 만료되거나 취소된 경우에만 같은 GitHub 계정으로 다시 로그인하도록 안내합니다. 재로그인 중에도 미동기화 코드는 보존됩니다. 제출 판정을 기다리는 코드는 `pendingAttempts`, Accepted 후 GitHub 동기화를 기다리는 코드는 `pendingQueue`에 임시 보관하고, 완료 기록은 코드 본문 없이 `syncHistory`에 최대 100개 저장합니다. 로그아웃할 때 미동기화 코드가 있으면 삭제 여부를 먼저 확인합니다. 자세한 데이터 처리 범위는 [개인정보 안내](PRIVACY.md)를 확인하세요.
 
 ## 릴리스 패키지 생성
 
@@ -70,7 +70,7 @@ unzip -t artifacts/leetdash-extension.zip
 
 ## GitHub OAuth
 
-확장 프로그램은 GitHub OAuth Device Flow를 사용하며 공개 Client ID만 포함합니다. OAuth App에는 `Enable Device Flow`가 활성화되어 있습니다. Client ID는 앱을 식별할 뿐 인증 비밀로 사용하지 않습니다. GitHub access token은 사용자가 Device Flow를 승인한 뒤에만 발급됩니다.
+확장 프로그램은 GitHub OAuth Device Flow를 사용하며 공개 Client ID만 포함합니다. OAuth App에는 `Enable Device Flow`와 만료형 access token이 활성화되어 있습니다. Client ID는 앱을 식별할 뿐 인증 비밀로 사용하지 않습니다. 로그인 시 `public_repo offline_access` 범위를 요청하며, access token과 refresh token은 사용자가 Device Flow를 승인한 뒤에만 발급됩니다. access token은 만료 5분 전부터 refresh token으로 자동 교체하고, GitHub API가 401을 반환하면 한 번 갱신한 뒤 해당 요청을 한 번만 재시도합니다. 갱신 권한이 만료되거나 취소된 경우에는 토큰을 제거하고 재로그인을 요청하되 미동기화 코드는 삭제하지 않습니다.
 
 ## 동작
 

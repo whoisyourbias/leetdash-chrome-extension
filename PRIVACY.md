@@ -1,12 +1,12 @@
 # Leetdash Submission Sync 개인정보 안내
 
-최종 업데이트: 2026-08-17
+최종 업데이트: 2026-09-08
 
 Leetdash Submission Sync는 LeetCode, Programmers, SWEA에서 사용자가 제출해 통과한 풀이를 사용자의 GitHub fork와 중앙 Leetdash 저장소의 Draft Pull Request로 전송하는 Chrome 확장 프로그램입니다.
 
 ## 처리하는 데이터
 
-- GitHub OAuth access token, GitHub 로그인 ID와 프로필 이미지 URL
+- GitHub OAuth access token과 refresh token, 각 토큰의 만료 시각, GitHub 로그인 ID와 프로필 이미지 URL
 - 지원 사이트의 문제 페이지 URL과 제목
 - 제출 시점의 소스 코드와 선택된 프로그래밍 언어
 - Accepted 시각, 동기화 상태, 생성된 Pull Request 주소
@@ -23,9 +23,9 @@ LeetCode, Programmers, SWEA 페이지에서 읽은 코드는 Accepted 판정과 
 
 ## 저장과 삭제
 
-- GitHub OAuth access token은 `chrome.storage.local`에 저장되며 웹 페이지에 노출하지 않습니다.
+- GitHub OAuth access token과 refresh token 및 만료 시각은 `chrome.storage.local`에 저장되며 웹 페이지에 노출하지 않습니다. access token은 만료 전에 refresh token으로 자동 교체됩니다.
 - 동기화 대기 중인 코드는 로컬 `pendingQueue`에 저장되고 GitHub 업로드가 완료되면 항목 전체를 큐에서 제거합니다. 최근 완료 내역은 코드 본문 없이 로컬 `syncHistory`에 저장됩니다.
-- 로그아웃하면 인증 정보가 제거됩니다. 미동기화 코드가 있으면 삭제 여부를 먼저 확인합니다.
+- 로그아웃하면 인증 정보가 제거됩니다. 자동 갱신이 불가능해 재로그인이 필요한 경우에는 인증 토큰만 제거하고 미동기화 코드는 보존합니다. 사용자가 다른 계정으로 전환하면서 로컬 작업 삭제를 명시적으로 확인한 경우에만 미동기화 코드를 제거합니다.
 - GitHub에 올라간 커밋과 Pull Request의 보관 및 삭제는 GitHub와 각 저장소의 정책 및 권한을 따릅니다.
 - 확장 프로그램을 제거하면 Chrome이 해당 확장의 로컬 저장 데이터를 제거합니다.
 

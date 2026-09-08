@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getSettings, getSyncActivity } from "../src/background/storage";
+import { getSettings, getSyncActivity, hasPendingSourceWork } from "../src/background/storage";
 
 describe("sync activity storage", () => {
   beforeEach(() => {
@@ -53,5 +53,12 @@ describe("sync activity storage", () => {
     }));
 
     await expect(getSettings()).resolves.toEqual({ autoReadyAfterMidnight: false });
+  });
+});
+
+describe("pending source detection", () => {
+  it("requires confirmation when captured source is awaiting an Accepted result", () => {
+    expect(hasPendingSourceWork([], { attempt: { code: "secret" } })).toBe(true);
+    expect(hasPendingSourceWork([], {})).toBe(false);
   });
 });

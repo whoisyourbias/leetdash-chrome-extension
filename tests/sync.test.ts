@@ -1,9 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyActiveProblemOverrideToQueue, applyProblemOverride, buildDynamicProblemMeta, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
+import { applyActiveProblemOverrideToQueue, applyProblemOverride, applySyncFailure, buildDynamicProblemMeta, enqueueAccepted, moveCompletedToHistory, pollPullRequests, refreshTodayPull } from "../src/background/sync";
+import { ReauthenticationRequiredError } from "../src/background/auth-session";
 import type { ActiveProblem, AuthState, DailyPullRequest, PendingAttempt, ProblemCatalog, ProblemOverride, SubmissionQueueItem, SyncHistoryItem } from "../src/shared/model";
 
-const auth: AuthState = { login: "ada", token: "token" };
+const auth: AuthState = {
+  schemaVersion: 2,
+  status: "active",
+  accessToken: "token",
+  accessTokenExpiresAt: "2026-09-08T08:00:00.000Z",
+  refreshToken: "refresh-token",
+  refreshTokenExpiresAt: "2027-03-11T00:00:00.000Z",
+  login: "ada",
+};
 const record: DailyPullRequest = {
   date: "2026-08-16",
   compactDate: "260816",
@@ -41,6 +50,28 @@ beforeEach(() => {
       }),
     } },
   };
+});
+
+describe("authentication recovery", () => {
+  it("keeps reauthentication failures immediately retryable after login", () => {
+    const item = {
+      id: "submission",
+      status: "syncing",
+      attempts: 2,
+    } as SubmissionQueueItem;
+    const error = new ReauthenticationRequiredError({
+      schemaVersion: 2,
+      status: "reauth_required",
+      login: "ada",
+      reason: "refresh_rejected",
+    });
+
+    expect(applySyncFailure(item, error, new Date("2026-09-08T08:00:00.000Z"))).toMatchObject({
+      status: "pending",
+      error: "GitHub 연결을 다시 확인해 주세요.",
+      retryAt: undefined,
+    });
+  });
 });
 
 describe("dynamic SWEA metadata", () => {

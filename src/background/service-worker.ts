@@ -1,6 +1,5 @@
 import { pollDeviceFlow, startDeviceFlow } from "./auth.js";
 import {
-  getAuth,
   getDeviceSession,
   getPendingAttempts,
   getPendingQueue,
@@ -9,10 +8,13 @@ import {
   getSettings,
   getSyncActivity,
   getSyncHistory,
+  hasPendingSourceWork,
   removeStored,
   setStored,
   storageKeys,
 } from "./storage.js";
+import { AuthSessionManager, toPublicAuthState } from "./auth-session.js";
+import { PendingWorkCoordinator } from "./pending-work-lock.js";
 import {
   clearActiveProblemOverride,
   clearProblemOverride,
@@ -27,11 +29,13 @@ import { GitHubClient } from "./github.js";
 import { nextSeoulMidnight, toSeoulDate } from "../shared/date.js";
 import { providerForUrl, resolveCatalogProblem } from "../shared/catalog.js";
 import { problemContextKey } from "../shared/problem-context.js";
-import type { ActiveProblem, DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SubmissionQueueItem, SyncProgressEvent } from "../shared/model.js";
+import type { ActiveAuthSession, ActiveProblem, DailyPullRequest, EditorSnapshot, PendingAttempt, Provider, SubmissionQueueItem, SyncProgressEvent } from "../shared/model.js";
 
 const SYNC_ALARM = "submission-sync";
 const CLOSE_ALARM = "day-close";
 const AUTH_ALARM = "auth-poll";
+const authSessions = new AuthSessionManager();
+const pendingWork = new PendingWorkCoordinator();
 let synchronization: Promise<void> | undefined;
 
 async function publishSyncProgress(event: SyncProgressEvent): Promise<void> {
@@ -51,9 +55,9 @@ function scheduleAlarms(): void {
 
 async function runSynchronization(): Promise<void> {
   if (synchronization) return synchronization;
-  const auth = await getAuth();
+  const auth = await authSessions.getActiveSession();
   if (!auth) return;
-  synchronization = synchronize(auth, fetch, publishSyncProgress)
+  synchronization = pendingWork.mutate(() => synchronize(auth, authSessions, fetch, publishSyncProgress))
     .catch(() => undefined)
     .finally(() => { synchronization = undefined; });
   return synchronization;
@@ -65,7 +69,7 @@ async function pollAuthentication(): Promise<void> {
   try {
     const result = await pollDeviceFlow(session);
     if (result.auth) {
-      const users = await new GitHubClient(result.auth.token).readUsers();
+      const users = await new GitHubClient(result.auth.accessToken).readUsers();
       const registered = users.users.some(
         (user) => user.githubUsername.toLowerCase() === result.auth!.login.toLowerCase(),
       );
@@ -73,7 +77,7 @@ async function pollAuthentication(): Promise<void> {
         throw new Error(`${result.auth.login} 계정이 중앙 whoisyourbias/leetdash 저장소의 data/users.json에 등록되지 않았습니다.`);
       }
       await Promise.all([
-        setStored(storageKeys.auth, result.auth),
+        pendingWork.transition(() => authSessions.acceptLogin(result.auth!)),
         removeStored(storageKeys.deviceSession),
         chrome.alarms.clear(AUTH_ALARM),
       ]);
@@ -221,7 +225,7 @@ function readSweaProblemMetadata(): {
   };
 }
 
-async function getActiveProblem(auth: { token: string } | undefined): Promise<ActiveProblem | undefined> {
+async function getActiveProblem(auth: ActiveAuthSession | undefined): Promise<ActiveProblem | undefined> {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!Number.isInteger(tab?.id) || typeof tab.url !== "string") return undefined;
   const provider = providerForUrl(tab.url);
@@ -277,7 +281,7 @@ async function getActiveProblem(auth: { token: string } | undefined): Promise<Ac
   }
   if (!problemOverride && auth) {
     try {
-      const catalog = await loadCatalog(new GitHubClient(auth.token));
+      const catalog = await loadCatalog(new GitHubClient(authSessions));
       const resolved = resolveCatalogProblem(
         catalog,
         provider,
@@ -344,7 +348,12 @@ async function refreshProblemMetadata(item: SubmissionQueueItem): Promise<void> 
   if (typeof metadata?.pageTitle === "string" && metadata.pageTitle.trim()) item.pageTitle = metadata.pageTitle.trim();
 }
 
-async function captureAttempt(message: any, sender: any): Promise<any> {
+interface PreparedAttempt {
+  tabId: number;
+  attempt: PendingAttempt;
+}
+
+async function prepareAttempt(message: any, sender: any): Promise<PreparedAttempt> {
   const tabId = sender.tab?.id;
   const frameId = Number.isInteger(sender.frameId) ? sender.frameId : 0;
   const senderUrl = sender.tab?.url ?? sender.url;
@@ -382,10 +391,14 @@ async function captureAttempt(message: any, sender: any): Promise<any> {
     code: snapshot.code,
     language: snapshot.language || String(message.languageHint ?? ""),
   };
+  return { tabId, attempt };
+}
+
+async function storePreparedAttempt({ tabId, attempt }: PreparedAttempt): Promise<any> {
   const pending = await getPendingAttempts();
   pending[String(tabId)] = attempt;
   await setStored(storageKeys.pendingAttempts, pending);
-  return { ok: true, attemptId: id };
+  return { ok: true, attemptId: attempt.id };
 }
 
 async function acceptAttempt(sender: any): Promise<any> {
@@ -419,14 +432,15 @@ async function acceptAttempt(sender: any): Promise<any> {
 }
 
 async function publicState(): Promise<any> {
-  const [auth, deviceSession, queue, history, pullSnapshots, settings, syncActivity] = await Promise.all([
-    getAuth(), getDeviceSession(), getPendingQueue(), getSyncHistory(), getPullSnapshots(), getSettings(), getSyncActivity(),
+  const [authState, deviceSession, queue, pendingAttempts, history, pullSnapshots, settings, syncActivity] = await Promise.all([
+    authSessions.getState(), getDeviceSession(), getPendingQueue(), getPendingAttempts(), getSyncHistory(), getPullSnapshots(), getSettings(), getSyncActivity(),
   ]);
+  const auth = authState?.status === "active" ? authState : undefined;
   let today = toSeoulDate(new Date()).date;
   let todayPull: DailyPullRequest | undefined = pullSnapshots[today];
   if (auth) {
     try {
-      const refreshed = await refreshTodayPull(auth, new GitHubClient(auth.token), pullSnapshots);
+      const refreshed = await refreshTodayPull(auth, new GitHubClient(authSessions), pullSnapshots);
       today = refreshed.date;
       todayPull = refreshed.pull;
     } catch {
@@ -434,13 +448,16 @@ async function publicState(): Promise<any> {
     }
   }
   const activeProblem = auth ? await getActiveProblem(auth) : undefined;
+  const latestAuthState = await authSessions.getState();
+  const publicAuth = toPublicAuthState(latestAuthState);
   const recentSubmissions = [...history, ...queue.map(({ code: _code, ...item }) => item)]
     .sort((left, right) => left.acceptedAt.localeCompare(right.acceptedAt))
     .slice(-20);
   return {
-    auth: auth ? { login: auth.login, avatarUrl: auth.avatarUrl } : undefined,
+    ...publicAuth,
     deviceSession,
     queue: recentSubmissions,
+    hasPendingWork: hasPendingSourceWork(queue, pendingAttempts),
     activeProblem,
     today,
     todayPull,
@@ -464,61 +481,63 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       await pollAuthentication();
       return publicState();
     case "auth:logout": {
-      const queue = await getPendingQueue();
-      if (queue.length > 0 && !message.force) return { needsConfirmation: true };
-      await Promise.all([
-        removeStored(storageKeys.auth),
-        removeStored(storageKeys.branchClaims),
-        removeStored(storageKeys.deviceSession),
-        removeStored(storageKeys.pendingAttempts),
-        removeStored(storageKeys.pullSnapshots),
-        removeStored(storageKeys.syncHistory),
-        removeStored(storageKeys.syncActivity),
-        message.force ? setStored(storageKeys.pendingQueue, []) : Promise.resolve(),
-      ]);
+      if (!await pendingWork.transition(() => authSessions.logout(message.force === true))) {
+        return { needsConfirmation: true };
+      }
       return publicState();
     }
     case "capture-attempt":
-      return captureAttempt(message, sender);
+      return pendingWork.capture(
+        () => prepareAttempt(message, sender),
+        (prepared) => storePreparedAttempt(prepared),
+      );
     case "submission-accepted":
-      return acceptAttempt(sender);
+      return pendingWork.transition(() => acceptAttempt(sender));
     case "queue:retry": {
-      const queue = await getPendingQueue();
-      for (const item of queue) {
-        if (item.status === "blocked" || item.status === "pending") {
-          if (!item.problemOverride && item.provider === "swea" && item.error?.includes("카탈로그")) {
-            await refreshProblemMetadata(item);
+      await pendingWork.mutate(async () => {
+        const queue = await getPendingQueue();
+        for (const item of queue) {
+          if (item.status === "blocked" || item.status === "pending") {
+            if (!item.problemOverride && item.provider === "swea" && item.error?.includes("카탈로그")) {
+              await refreshProblemMetadata(item);
+            }
+            item.status = "pending";
+            item.error = undefined;
+            item.blockReason = undefined;
+            item.retryAt = undefined;
           }
-          item.status = "pending";
-          item.error = undefined;
-          item.blockReason = undefined;
-          item.retryAt = undefined;
         }
-      }
-      await setStored(storageKeys.pendingQueue, queue);
+        await setStored(storageKeys.pendingQueue, queue);
+      });
       await runSynchronization();
       return publicState();
     }
     case "queue:problem-override": {
-      const auth = await getAuth();
+      const auth = await authSessions.getActiveSession();
       if (!auth) throw new Error("GitHub 로그인이 필요합니다.");
       if (typeof message.itemId !== "string") throw new Error("수정할 제출 정보가 올바르지 않습니다.");
       if (!["leetcode", "programmers", "swea"].includes(message.provider)) {
         throw new Error("지원하지 않는 공급자입니다.");
       }
       if (typeof message.problemId !== "string") throw new Error("문제 번호가 올바르지 않습니다.");
-      await saveProblemOverride(auth, message.itemId, message.provider as Provider, message.problemId);
+      await pendingWork.mutate(() => saveProblemOverride(
+        auth,
+        message.itemId,
+        message.provider as Provider,
+        message.problemId,
+        authSessions,
+      ));
       await runSynchronization();
       return publicState();
     }
     case "queue:problem-override:clear": {
       if (typeof message.itemId !== "string") throw new Error("수정할 제출 정보가 올바르지 않습니다.");
-      await clearProblemOverride(message.itemId);
+      await pendingWork.mutate(() => clearProblemOverride(message.itemId));
       await runSynchronization();
       return publicState();
     }
     case "active-problem:override": {
-      const auth = await getAuth();
+      const auth = await authSessions.getActiveSession();
       if (!auth) throw new Error("GitHub 로그인이 필요합니다.");
       if (!["leetcode", "programmers", "swea"].includes(message.provider)) {
         throw new Error("지원하지 않는 공급자입니다.");
@@ -530,22 +549,26 @@ async function handleMessage(message: any, sender: any): Promise<any> {
       if (!activeProblem || activeProblem.contextKey !== message.contextKey) {
         throw new Error("현재 열린 문제가 변경되었습니다. 팝업을 다시 열어 확인하세요.");
       }
-      await saveActiveProblemOverride(
+      await pendingWork.mutate(() => saveActiveProblemOverride(
         auth,
         activeProblem,
         message.provider as Provider,
         message.problemId,
-      );
+        authSessions,
+      ));
       await runSynchronization();
       return publicState();
     }
     case "active-problem:override:clear": {
       if (typeof message.contextKey !== "string") throw new Error("현재 문제 정보가 올바르지 않습니다.");
-      const activeProblem = await getActiveProblem(await getAuth());
+      const activeProblem = await getActiveProblem(await authSessions.getActiveSession());
       if (!activeProblem || activeProblem.contextKey !== message.contextKey) {
         throw new Error("현재 열린 문제가 변경되었습니다. 팝업을 다시 열어 확인하세요.");
       }
-      await clearActiveProblemOverride([activeProblem.contextKey, ...activeProblem.contextAliases]);
+      await pendingWork.mutate(() => clearActiveProblemOverride([
+        activeProblem.contextKey,
+        ...activeProblem.contextAliases,
+      ]));
       await runSynchronization();
       return publicState();
     }

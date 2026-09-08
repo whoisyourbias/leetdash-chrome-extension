@@ -69,6 +69,69 @@ describe("GitHub daily submission orchestration", () => {
     await expect(client.request("GET", "/user")).resolves.toEqual({ login: "ada" });
   });
 
+  it("refreshes once after a 401 and retries with the rotated token", async () => {
+    const credentials = {
+      getAccessToken: vi.fn(async () => "expired-access"),
+      recoverUnauthorized: vi.fn(async () => "fresh-access"),
+      markUnauthorized: vi.fn(async () => undefined),
+    };
+    const authorizations: string[] = [];
+    const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init: RequestInit = {}) => {
+      authorizations.push((init.headers as Record<string, string>).Authorization);
+      return authorizations.length === 1
+        ? response({ message: "Bad credentials" }, 401)
+        : response({ login: "ada" });
+    });
+
+    await expect(new GitHubClient(credentials, fetchImpl as typeof fetch).request("GET", "/user"))
+      .resolves.toEqual({ login: "ada" });
+    expect(authorizations).toEqual(["Bearer expired-access", "Bearer fresh-access"]);
+    expect(credentials.markUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("marks the rotated credentials invalid when the single retry is also unauthorized", async () => {
+    const credentials = {
+      getAccessToken: vi.fn(async () => "expired-access"),
+      recoverUnauthorized: vi.fn(async () => "fresh-access"),
+      markUnauthorized: vi.fn(async () => undefined),
+    };
+    const fetchImpl = vi.fn(async () => response({ message: "Bad credentials" }, 401));
+
+    await expect(new GitHubClient(credentials, fetchImpl as typeof fetch).request("GET", "/user"))
+      .rejects.toMatchObject({ status: 401 });
+    expect(credentials.markUnauthorized).toHaveBeenCalledWith("fresh-access");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not refresh permissions or repository errors", async () => {
+    const credentials = {
+      getAccessToken: vi.fn(async () => "access"),
+      recoverUnauthorized: vi.fn(async () => "unused"),
+      markUnauthorized: vi.fn(async () => undefined),
+    };
+
+    await expect(new GitHubClient(
+      credentials,
+      vi.fn(async () => response({ message: "Forbidden" }, 403)) as typeof fetch,
+    ).request("GET", "/user")).rejects.toMatchObject({ status: 403 });
+    expect(credentials.recoverUnauthorized).not.toHaveBeenCalled();
+    expect(credentials.markUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("uses the same 401 recovery path for raw repository content", async () => {
+    const credentials = {
+      getAccessToken: vi.fn(async () => "expired-access"),
+      recoverUnauthorized: vi.fn(async () => "fresh-access"),
+      markUnauthorized: vi.fn(async () => undefined),
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ message: "Bad credentials" }, 401))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ users: [] }), { status: 200 }));
+
+    await expect(new GitHubClient(credentials, fetchImpl as typeof fetch).readUsers())
+      .resolves.toEqual({ users: [] });
+  });
+
   it("reports the failed method and pathname without query values", async () => {
     const fetchImpl = vi.fn(async () => response({ message: "Not Found" }, 404));
     const client = new GitHubClient("token", fetchImpl as typeof fetch);

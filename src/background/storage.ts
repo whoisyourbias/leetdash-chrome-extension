@@ -1,4 +1,4 @@
-import type { AuthState, DailyPullRequest, DeviceSession, ExtensionSettings, PendingAttempt, ProblemCatalog, ProblemOverride, SubmissionQueueItem, SyncActivity, SyncHistoryItem } from "../shared/model.js";
+import type { DailyPullRequest, DeviceSession, ExtensionSettings, PendingAttempt, ProblemCatalog, ProblemOverride, StoredAuthState, SubmissionQueueItem, SyncActivity, SyncHistoryItem } from "../shared/model.js";
 
 export const storageKeys = {
   auth: "auth",
@@ -42,7 +42,12 @@ export async function removeStored(key: string): Promise<void> {
   await chrome.storage.local.remove(key);
 }
 
-export const getAuth = () => getStored<AuthState | undefined>(storageKeys.auth, undefined);
+export function hasPendingSourceWork(queue: unknown, attempts: unknown): boolean {
+  return (Array.isArray(queue) && queue.length > 0)
+    || (!!attempts && typeof attempts === "object" && Object.keys(attempts).length > 0);
+}
+
+export const getAuth = () => getStored<StoredAuthState | undefined>(storageKeys.auth, undefined);
 export const getBranchClaims = () => getStored<Record<string, string>>(storageKeys.branchClaims, {});
 export const getCatalogCache = () => getStored<CatalogCache | undefined>(storageKeys.catalog, undefined);
 export const getDeviceSession = () => getStored<DeviceSession | undefined>(storageKeys.deviceSession, undefined);

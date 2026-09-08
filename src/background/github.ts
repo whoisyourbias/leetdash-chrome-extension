@@ -19,6 +19,12 @@ interface RequestOptions {
 
 type OperationProgress = (message: string) => void | Promise<void>;
 
+export interface GitHubCredentialProvider {
+  getAccessToken(): Promise<string>;
+  recoverUnauthorized(failedToken: string): Promise<string>;
+  markUnauthorized(failedToken: string): Promise<void>;
+}
+
 export class GitHubError extends Error {
   constructor(
     message: string,
@@ -32,21 +38,47 @@ export class GitHubError extends Error {
 }
 
 export class GitHubClient {
+  private readonly credentials: GitHubCredentialProvider;
+
   constructor(
-    private readonly token: string,
+    credentials: string | GitHubCredentialProvider,
     private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+  ) {
+    this.credentials = typeof credentials === "string"
+      ? {
+          getAccessToken: async () => credentials,
+          recoverUnauthorized: async () => credentials,
+          markUnauthorized: async () => undefined,
+        }
+      : credentials;
+  }
+
+  private async authenticatedFetch(input: URL, init: RequestInit): Promise<Response> {
+    let token = await this.credentials.getAccessToken();
+    const send = (accessToken: string) => this.fetchImpl.call(globalThis, input, {
+      ...init,
+      headers: {
+        ...(init.headers as Record<string, string> | undefined),
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    let response = await send(token);
+    if (response.status !== 401) return response;
+    token = await this.credentials.recoverUnauthorized(token);
+    response = await send(token);
+    if (response.status === 401) await this.credentials.markUnauthorized(token);
+    return response;
+  }
 
   async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
     const url = new URL(path.startsWith("http") ? path : `https://api.github.com${path}`);
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, value);
     // Browser-native fetch is an IDL method and must not be invoked with the
     // GitHubClient instance as its receiver inside a service worker.
-    const response = await this.fetchImpl.call(globalThis, url, {
+    const response = await this.authenticatedFetch(url, {
       method,
       headers: {
         Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${this.token}`,
         "Content-Type": "application/json",
         "X-GitHub-Api-Version": "2022-11-28",
       },
@@ -77,13 +109,12 @@ export class GitHubClient {
   async readJsonFile<T>(repository: string, filePath: string, ref = BASE_BRANCH): Promise<T> {
     const url = new URL(`https://api.github.com/repos/${repository}/contents/${filePath}`);
     url.searchParams.set("ref", ref);
-    const response = await this.fetchImpl.call(globalThis, url, {
+    const response = await this.authenticatedFetch(url, {
       method: "GET",
       headers: {
         // The regular Contents response omits `content` for files over 1 MB.
         // Raw media works for the checked-in catalog, which is currently ~4.8 MB.
         Accept: "application/vnd.github.raw+json",
-        Authorization: `Bearer ${this.token}`,
         "X-GitHub-Api-Version": "2022-11-28",
       },
     });

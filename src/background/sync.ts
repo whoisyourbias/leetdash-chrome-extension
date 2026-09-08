@@ -15,7 +15,8 @@ import type {
   SyncHistoryItem,
   SyncStage,
 } from "../shared/model.js";
-import { GitHubClient, GitHubError, submissionBranch } from "./github.js";
+import { GitHubClient, GitHubError, submissionBranch, type GitHubCredentialProvider } from "./github.js";
+import { ReauthenticationRequiredError } from "./auth-session.js";
 import {
   getCatalogCache,
   getBranchClaims,
@@ -156,13 +157,14 @@ export async function saveProblemOverride(
   itemId: string,
   provider: Provider,
   problemId: string,
+  credentials: string | GitHubCredentialProvider = auth.accessToken,
   fetchImpl: typeof fetch = fetch,
 ): Promise<SubmissionQueueItem> {
   let queue = await getPendingQueue();
   let index = queue.findIndex((item) => item.id === itemId);
   if (index < 0) throw new Error("수정할 미동기화 제출을 찾지 못했습니다.");
   if (queue[index].status === "syncing") throw new Error("업로드 중인 제출은 문제 정보를 수정할 수 없습니다.");
-  const catalog = await loadCatalog(new GitHubClient(auth.token, fetchImpl));
+  const catalog = await loadCatalog(new GitHubClient(credentials, fetchImpl));
   queue = await getPendingQueue();
   index = queue.findIndex((item) => item.id === itemId);
   if (index < 0) throw new Error("문제 정보를 확인하는 동안 제출 동기화가 완료되었습니다.");
@@ -228,9 +230,10 @@ export async function saveActiveProblemOverride(
   activeProblem: ActiveProblem,
   provider: Provider,
   problemId: string,
+  credentials: string | GitHubCredentialProvider = auth.accessToken,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ProblemOverride> {
-  const catalog = await loadCatalog(new GitHubClient(auth.token, fetchImpl));
+  const catalog = await loadCatalog(new GitHubClient(credentials, fetchImpl));
   const problemOverride = createProblemOverride(
     catalog,
     {
@@ -322,6 +325,24 @@ function retryDelay(attempts: number, error: unknown): number {
 
 function isBlocked(error: unknown): boolean {
   return error instanceof GitHubError && [401, 403, 404, 422].includes(error.status);
+}
+
+export function applySyncFailure(
+  item: SubmissionQueueItem,
+  error: unknown,
+  now = new Date(),
+): SubmissionQueueItem {
+  const blocked = isBlocked(error);
+  const reauthenticationRequired = error instanceof ReauthenticationRequiredError;
+  return {
+    ...item,
+    status: blocked ? "blocked" : "pending",
+    error: error instanceof Error ? error.message : "알 수 없는 동기화 오류입니다.",
+    blockReason: error instanceof GitHubError ? error.blockReason : undefined,
+    retryAt: blocked || reauthenticationRequired
+      ? undefined
+      : new Date(now.getTime() + retryDelay(item.attempts, error)).toISOString(),
+  };
 }
 
 function safeSubmissionsPath(value: string): string | undefined {
@@ -535,10 +556,11 @@ export function moveCompletedToHistory(
 
 export async function synchronize(
   auth: AuthState,
+  credentials: string | GitHubCredentialProvider = auth.accessToken,
   fetchImpl: typeof fetch = fetch,
   onProgress?: (event: SyncProgressEvent) => void | Promise<void>,
 ): Promise<void> {
-  const client = new GitHubClient(auth.token, fetchImpl);
+  const client = new GitHubClient(credentials, fetchImpl);
   const [queue, history, pullSnapshots, settings] = await Promise.all([
     getPendingQueue(), getSyncHistory(), getPullSnapshots(), getSettings(),
   ]);
@@ -586,14 +608,7 @@ export async function synchronize(
         message: completed.history.prUrl ? "Draft PR 업로드를 완료했습니다." : "GitHub 동기화를 완료했습니다.",
       });
     } catch (error) {
-      const attempts = queue[index].attempts;
-      queue[index] = {
-        ...queue[index],
-        status: isBlocked(error) ? "blocked" : "pending",
-        error: error instanceof Error ? error.message : "알 수 없는 동기화 오류입니다.",
-        blockReason: error instanceof GitHubError ? error.blockReason : undefined,
-        retryAt: isBlocked(error) ? undefined : new Date(Date.now() + retryDelay(attempts, error)).toISOString(),
-      };
+      queue[index] = applySyncFailure(queue[index], error);
       await setStored(storageKeys.pendingQueue, queue);
       await onProgress?.({
         itemId: current.id,
