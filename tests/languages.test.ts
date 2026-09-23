@@ -10,6 +10,11 @@ describe("submission languages", () => {
     ["JavaScript", "js"],
     ["Kotlin 1.9", "kt"],
     ["text/x-java", "java"],
+    ["MySQL", "sql"],
+    ["mysql", "sql"],
+    ["text/x-mysql", "sql"],
+    ["x-mysql", "sql"],
+    ["SQL", "sql"],
   ])("maps %s to %s", (language, extension) => {
     expect(languageExtension(language)).toBe(extension);
   });
