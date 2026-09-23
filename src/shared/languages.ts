@@ -30,6 +30,9 @@ const aliases: Record<string, string> = {
   textxpython: "py",
   textjavascript: "js",
   "objective-c": "c",
+  mysql: "sql",
+  "textx-mysql": "sql",
+  "x-mysql": "sql",
 };
 
 export function languageExtension(language: string): string | undefined {
